@@ -55,7 +55,13 @@ meta flag. Support both shapes.
 
 3. Choose the placement workflow.
 
-   Holder workflow: use the selected holder's `props.w` and `props.h` as the size contract. The generated image should match the holder aspect ratio as closely as possible.
+   Holder workflow: use the selected holder's `props.w` and `props.h` as the size contract for both generation and placement. Before generating, derive and keep these values:
+
+   - `targetWidth`: selected holder `props.w`
+   - `targetHeight`: selected holder `props.h`
+   - `targetAspectRatio`: the reduced `targetWidth:targetHeight` ratio when it maps cleanly, plus the decimal `targetWidth / targetHeight`
+
+   If the selected holder matches a Cowart ratio preset such as `1:1`, `3:2`, `2:3`, `4:3`, `3:4`, `16:9`, or `9:16`, use that preset label as the human-readable aspect ratio. The generated image should be composed for this target size and aspect ratio, and should not rely on later stretching or cropping to fit the holder.
 
    If the holder `type` is `frame`, insert the generated image as a child of the frame:
 
@@ -69,9 +75,19 @@ meta flag. Support both shapes.
 
    If the holder is a legacy `geo` rectangle, keep using the legacy placement contract: same `x`, `y`, `rotation`, `parentId`, `props.w`, and `props.h` as the holder.
 
-   Standalone workflow: when no AI holder is selected, generate the image anyway and insert it as a normal image shape on the current page. Prefer the current page from Cowart view state; if there is a selected non-holder shape and it is useful as context, place the image beside it, otherwise place it in a clear page area. Use the generated bitmap's aspect ratio and a practical display width such as 512 canvas units unless the user requested a different size or aspect ratio.
+   Standalone workflow: when no AI holder is selected, generate the image anyway and insert it as a normal image shape on the current page. Prefer the current page from Cowart view state; if there is a selected non-holder shape and it is useful as context, place the image beside it, otherwise place it in a clear page area. If the user requested a size or aspect ratio, pass that size and ratio into generation and use it for display. Otherwise, use the generated bitmap's natural aspect ratio and a practical display width such as 512 canvas units.
 
 4. Generate the bitmap with the built-in `imagegen` skill unless the user explicitly requests another image path. If the requested asset needs visible copy, labels, poster text, ad text, UI text, or typography, include that text directly in the image generation prompt and let the image model produce the final bitmap. Do not default to generating a text-free background and then adding text locally unless the user explicitly asks for local typography, deterministic text overlay, SVG/vector output, or another non-imagegen layout step.
+
+   For the holder workflow, the image generation request must explicitly include the selected holder's target size and aspect ratio. Add this information to the model prompt, for example:
+
+   ```text
+   Target canvas slot: 512 x 683 canvas units.
+   Target aspect ratio: 3:4 (0.75 width/height).
+   Compose the final bitmap for this portrait ratio so it fits the slot without cropping or stretching.
+   ```
+
+   If the image generation tool or model accepts size or aspect-ratio parameters, pass the closest supported option in addition to the prompt text. If only prompt text is available, the prompt text must still include `targetWidth`, `targetHeight`, and `targetAspectRatio`.
 
    Resolve the actual local output image carefully before inserting it into Cowart. Do not assume the built-in image generation flow always writes a fresh file under `$CODEX_HOME/generated_images`.
 
@@ -124,7 +140,7 @@ meta flag. Support both shapes.
    /page-assets/<page-id-without-page-prefix>/<filename>
    ```
 
-8. Refresh or let the browser hot-reload, then confirm the inserted shape id, final dimensions, and saved asset path. Include the holder id only when the holder workflow was used.
+8. Refresh or let the browser hot-reload, then confirm the inserted shape id, final dimensions, target aspect ratio, and saved asset path. Include the holder id only when the holder workflow was used.
 
 ## Notes
 

@@ -9,11 +9,14 @@ import {
   CloudToolbarItem,
   DefaultToolbar,
   DefaultColorStyle,
+  DefaultStylePanel,
+  DefaultStylePanelContent,
   DiamondToolbarItem,
   DrawToolbarItem,
   EllipseToolbarItem,
   EraserToolbarItem,
   FrameToolbarItem,
+  FrameShapeUtil,
   HandToolbarItem,
   HeartToolbarItem,
   HexagonToolbarItem,
@@ -32,6 +35,7 @@ import {
   TldrawUiMenuToolItem,
   TriangleToolbarItem,
   XBoxToolbarItem,
+  createTLStore,
   createShapeId,
   onDragFromToolbarToCreateShape,
   startEditingShapeWithRichText,
@@ -51,8 +55,19 @@ const VIEW_STATE_ENDPOINT = '/api/view-state'
 const SELECTION_STATE_ELEMENT_ID = 'cowart-selection-state'
 const AI_IMAGE_TOOL_ID = 'ai-image'
 const AI_IMAGE_HOLDER_LABEL = 'AI 图片'
-const AI_IMAGE_HOLDER_DEFAULT_W = 320
-const AI_IMAGE_HOLDER_DEFAULT_H = 220
+const AI_IMAGE_HOLDER_DEFAULT_W = 512
+const AI_IMAGE_HOLDER_DEFAULT_H = 683
+const AI_IMAGE_SIZE_MIN = 16
+const AI_IMAGE_SIZE_MAX = 8192
+const AI_IMAGE_ASPECT_PRESETS = [
+  { id: '1-1', label: '1:1', w: 512, h: 512 },
+  { id: '3-2', label: '3:2', w: 768, h: 512 },
+  { id: '2-3', label: '2:3', w: 512, h: 768 },
+  { id: '4-3', label: '4:3', w: 683, h: 512 },
+  { id: '3-4', label: '3:4', w: 512, h: 683 },
+  { id: '16-9', label: '16:9', w: 1024, h: 576 },
+  { id: '9-16', label: '9:16', w: 512, h: 910 }
+]
 const ANNOTATION_TOOL_ID = 'cowart-annotation'
 const ANNOTATION_TOOL_LABEL = '标注'
 const ANNOTATION_DEFAULT_COLOR = 'red'
@@ -73,6 +88,101 @@ const annotationToolIcon = (
 
 function isCanvasSnapshot(value) {
   return value && typeof value === 'object' && value.store && value.schema
+}
+
+function firstErrorLine(error) {
+  return error instanceof Error ? error.message.split('\n')[0] : String(error).split('\n')[0]
+}
+
+function describeSkippedRecord(record, reason) {
+  return {
+    id: typeof record?.id === 'string' ? record.id : '(missing id)',
+    typeName: typeof record?.typeName === 'string' ? record.typeName : '(missing typeName)',
+    type: typeof record?.type === 'string' ? record.type : null,
+    reason: firstErrorLine(reason)
+  }
+}
+
+function getRecordDependencies(record) {
+  const dependencies = []
+  if (record?.typeName === 'shape') {
+    if (typeof record.parentId === 'string') dependencies.push(record.parentId)
+    if (record.type === 'image' && typeof record.props?.assetId === 'string') {
+      dependencies.push(record.props.assetId)
+    }
+  }
+  if (record?.typeName === 'binding') {
+    const fromId = record.fromId ?? record.props?.fromId
+    const toId = record.toId ?? record.props?.toId
+    if (typeof fromId === 'string') dependencies.push(fromId)
+    if (typeof toId === 'string') dependencies.push(toId)
+  }
+  return dependencies
+}
+
+function pruneRecordsWithMissingDependencies(store, skippedRecords) {
+  const prunedStore = { ...store }
+  let changed = true
+
+  while (changed) {
+    changed = false
+    for (const record of Object.values(prunedStore)) {
+      const missingDependency = getRecordDependencies(record).find((id) => !prunedStore[id])
+      if (!missingDependency) continue
+
+      delete prunedStore[record.id]
+      skippedRecords.push(
+        describeSkippedRecord(record, `Missing dependent record: ${missingDependency}`)
+      )
+      changed = true
+    }
+  }
+
+  return prunedStore
+}
+
+function sanitizeCanvasSnapshotForTldraw(snapshot) {
+  if (!isCanvasSnapshot(snapshot)) {
+    return { snapshot: null, skippedRecords: [] }
+  }
+
+  const validationStore = createTLStore()
+  const skippedRecords = []
+  let migratedSnapshot
+
+  try {
+    migratedSnapshot = validationStore.migrateSnapshot(snapshot)
+  } catch (error) {
+    return {
+      snapshot: null,
+      skippedRecords: [
+        {
+          id: '(snapshot)',
+          typeName: 'snapshot',
+          type: null,
+          reason: firstErrorLine(error)
+        }
+      ]
+    }
+  }
+
+  const validStore = {}
+  for (const record of Object.values(migratedSnapshot.store)) {
+    try {
+      validationStore.put([record], 'initialize')
+      validStore[record.id] = validationStore.get(record.id)
+    } catch (error) {
+      skippedRecords.push(describeSkippedRecord(record, error))
+    }
+  }
+
+  return {
+    snapshot: {
+      schema: migratedSnapshot.schema,
+      store: pruneRecordsWithMissingDependencies(validStore, skippedRecords)
+    },
+    skippedRecords
+  }
 }
 
 function recordsAreEqual(left, right) {
@@ -97,29 +207,94 @@ function storeChangedSinceSnapshot(editor, baselineStore) {
 }
 
 function applyRemoteCanvasSnapshot(editor, snapshot, { preserveLocalChanges = false } = {}) {
-  if (!isCanvasSnapshot(snapshot)) return 0
+  if (!isCanvasSnapshot(snapshot)) return { changedRecords: 0, skippedRecords: [] }
 
-  const migratedSnapshot = editor.store.migrateSnapshot(snapshot)
-  const recordsToPut = Object.values(migratedSnapshot.store).filter((record) => {
+  const sanitized = sanitizeCanvasSnapshotForTldraw(snapshot)
+  if (!sanitized.snapshot) return { changedRecords: 0, skippedRecords: sanitized.skippedRecords }
+
+  const recordsToPut = Object.values(sanitized.snapshot.store).filter((record) => {
     const localRecord = editor.store.get(record.id)
     if (!localRecord) return true
     if (preserveLocalChanges) return false
     return !recordsAreEqual(localRecord, record)
   })
 
-  if (recordsToPut.length === 0) return 0
+  if (recordsToPut.length === 0) {
+    return { changedRecords: 0, skippedRecords: sanitized.skippedRecords }
+  }
 
+  let changedRecords = 0
   editor.store.mergeRemoteChanges(() => {
-    editor.store.put(recordsToPut)
+    for (const record of recordsToPut) {
+      try {
+        editor.store.put([record])
+        changedRecords += 1
+      } catch (error) {
+        sanitized.skippedRecords.push(describeSkippedRecord(record, error))
+      }
+    }
   })
 
-  return recordsToPut.length
+  return { changedRecords, skippedRecords: sanitized.skippedRecords }
 }
 
 function getAiImageHolderMeta() {
   return {
     cowartAiImageHolder: true,
     cowartAiImageHolderVersion: 1
+  }
+}
+
+function isAiImageHolderShape(shape) {
+  return shape?.type === 'frame' && shape.meta?.cowartAiImageHolder === true
+}
+
+function isAiImageAspectLocked(shape) {
+  return isAiImageHolderShape(shape) && shape.meta?.cowartAiAspectLocked === true
+}
+
+function clampAiImageSize(value) {
+  if (!Number.isFinite(value)) return null
+  return Math.round(Math.min(Math.max(value, AI_IMAGE_SIZE_MIN), AI_IMAGE_SIZE_MAX))
+}
+
+function getAiImageAspectRatio(shape) {
+  const metaRatio = Number(shape?.meta?.cowartAiAspectRatio)
+  if (Number.isFinite(metaRatio) && metaRatio > 0) return metaRatio
+
+  const w = Number(shape?.props?.w)
+  const h = Number(shape?.props?.h)
+  if (!Number.isFinite(w) || !Number.isFinite(h) || h === 0) return null
+
+  return w / h
+}
+
+function getAiImageAspectPreset(shape) {
+  if (!shape?.props) return null
+
+  const w = Number(shape.props.w)
+  const h = Number(shape.props.h)
+  if (!Number.isFinite(w) || !Number.isFinite(h) || h === 0) return null
+
+  const shapeRatio = w / h
+  return (
+    AI_IMAGE_ASPECT_PRESETS.find((preset) => {
+      const presetRatio = preset.w / preset.h
+      return Math.abs(shapeRatio - presetRatio) < 0.01
+    }) ?? null
+  )
+}
+
+function formatAiImageSize(value) {
+  return String(Math.round(Number.isFinite(value) ? value : 0))
+}
+
+function getAspectIconStyle(preset) {
+  const maxSize = 22
+  const scale = Math.min(maxSize / preset.w, maxSize / preset.h)
+  return {
+    width: `${Math.max(8, Math.round(preset.w * scale))}px`,
+    height: `${Math.max(8, Math.round(preset.h * scale))}px`
   }
 }
 
@@ -441,6 +616,18 @@ class CowartAnnotationPointing extends StateNode {
   }
 }
 
+class CowartFrameShapeUtil extends FrameShapeUtil {
+  isAspectRatioLocked(shape) {
+    if (isAiImageHolderShape(shape)) {
+      return isAiImageAspectLocked(shape)
+    }
+
+    return super.isAspectRatioLocked(shape)
+  }
+}
+
+const cowartShapeUtils = [CowartFrameShapeUtil]
+
 const cowartUiOverrides = {
   translations: {
     en: {
@@ -502,7 +689,219 @@ const cowartUiOverrides = {
 }
 
 const cowartComponents = {
-  Toolbar: CowartToolbar
+  Toolbar: CowartToolbar,
+  StylePanel: CowartStylePanel
+}
+
+function CowartStylePanel(props) {
+  return (
+    <DefaultStylePanel {...props}>
+      <DefaultStylePanelContent />
+      <CowartAiImageStyleControls />
+    </DefaultStylePanel>
+  )
+}
+
+function CowartAiImageStyleControls() {
+  const editor = useEditor()
+  const selectedAiImageShape = useValue(
+    'selected ai image holder shape',
+    () => {
+      const selectedShapeIds = editor.getSelectedShapeIds()
+      if (selectedShapeIds.length !== 1) return null
+
+      const shape = editor.getShape(selectedShapeIds[0])
+      return isAiImageHolderShape(shape) ? shape : null
+    },
+    [editor]
+  )
+  const [widthValue, setWidthValue] = useState('')
+  const [heightValue, setHeightValue] = useState('')
+
+  useEffect(() => {
+    if (!selectedAiImageShape) {
+      setWidthValue('')
+      setHeightValue('')
+      return
+    }
+
+    setWidthValue(formatAiImageSize(selectedAiImageShape.props.w))
+    setHeightValue(formatAiImageSize(selectedAiImageShape.props.h))
+  }, [selectedAiImageShape?.id, selectedAiImageShape?.props.w, selectedAiImageShape?.props.h])
+
+  if (!selectedAiImageShape) return null
+
+  const activePreset = getAiImageAspectPreset(selectedAiImageShape)
+  const currentWidth = Number(selectedAiImageShape.props.w)
+  const currentHeight = Number(selectedAiImageShape.props.h)
+  const currentRatio = currentHeight ? currentWidth / currentHeight : 1
+  const isAspectLocked = isAiImageAspectLocked(selectedAiImageShape)
+
+  function updateAiImageSize(nextWidth, nextHeight, historyMark = 'resize-ai-image-holder') {
+    const w = clampAiImageSize(nextWidth)
+    const h = clampAiImageSize(nextHeight)
+    if (!w || !h) return
+
+    editor.markHistoryStoppingPoint(historyMark)
+    editor.updateShapes([
+      {
+        id: selectedAiImageShape.id,
+        type: 'frame',
+        meta: {
+          ...selectedAiImageShape.meta,
+          cowartAiAspectRatio: w / h
+        },
+        props: { w, h }
+      }
+    ])
+  }
+
+  function toggleAspectLock() {
+    const nextIsLocked = !isAspectLocked
+    editor.markHistoryStoppingPoint('toggle-ai-image-aspect-lock')
+    editor.updateShapes([
+      {
+        id: selectedAiImageShape.id,
+        type: 'frame',
+        meta: {
+          ...selectedAiImageShape.meta,
+          cowartAiAspectLocked: nextIsLocked,
+          cowartAiAspectRatio: currentRatio
+        }
+      }
+    ])
+  }
+
+  function commitWidth(value) {
+    const nextWidth = clampAiImageSize(Number(value))
+    if (!nextWidth) {
+      setWidthValue(formatAiImageSize(currentWidth))
+      return
+    }
+
+    const nextHeight = isAspectLocked ? Math.round(nextWidth / currentRatio) : currentHeight
+    updateAiImageSize(nextWidth, nextHeight)
+  }
+
+  function commitHeight(value) {
+    const nextHeight = clampAiImageSize(Number(value))
+    if (!nextHeight) {
+      setHeightValue(formatAiImageSize(currentHeight))
+      return
+    }
+
+    const nextWidth = isAspectLocked ? Math.round(nextHeight * currentRatio) : currentWidth
+    updateAiImageSize(nextWidth, nextHeight)
+  }
+
+  function handleNumberKeyDown(event) {
+    if (event.key === 'Enter') {
+      event.currentTarget.blur()
+    }
+    if (event.key === 'Escape') {
+      setWidthValue(formatAiImageSize(currentWidth))
+      setHeightValue(formatAiImageSize(currentHeight))
+      event.currentTarget.blur()
+    }
+  }
+
+  return (
+    <div className="cowart-ai-image-style-panel" aria-label="AI 图片尺寸设置">
+      <section className="cowart-ai-style-section">
+        <div className="cowart-ai-style-heading">
+          <span>尺寸</span>
+        </div>
+        <div className="cowart-ai-size-row">
+          <label className="cowart-ai-size-field">
+            <span>W</span>
+            <input
+              aria-label="AI 图片宽度"
+              inputMode="numeric"
+              min={AI_IMAGE_SIZE_MIN}
+              max={AI_IMAGE_SIZE_MAX}
+              value={widthValue}
+              onChange={(event) => setWidthValue(event.target.value)}
+              onBlur={(event) => commitWidth(event.target.value)}
+              onKeyDown={handleNumberKeyDown}
+            />
+          </label>
+          <button
+            aria-label={isAspectLocked ? '解除宽高比例锁定' : '锁定宽高比例'}
+            aria-pressed={isAspectLocked}
+            className="cowart-ai-aspect-lock"
+            onClick={toggleAspectLock}
+            type="button"
+          >
+            <CowartAspectLockIcon locked={isAspectLocked} />
+          </button>
+          <label className="cowart-ai-size-field">
+            <span>H</span>
+            <input
+              aria-label="AI 图片高度"
+              inputMode="numeric"
+              min={AI_IMAGE_SIZE_MIN}
+              max={AI_IMAGE_SIZE_MAX}
+              value={heightValue}
+              onChange={(event) => setHeightValue(event.target.value)}
+              onBlur={(event) => commitHeight(event.target.value)}
+              onKeyDown={handleNumberKeyDown}
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className="cowart-ai-style-section">
+        <div className="cowart-ai-style-heading">
+          <span>比例</span>
+        </div>
+        <div className="cowart-ai-aspect-grid">
+          {AI_IMAGE_ASPECT_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              aria-pressed={activePreset?.id === preset.id}
+              className="cowart-ai-aspect-preset"
+              onClick={() =>
+                updateAiImageSize(preset.w, preset.h, `resize-ai-image-holder:${preset.id}`)
+              }
+              type="button"
+            >
+              <span
+                className="cowart-ai-aspect-icon"
+                style={getAspectIconStyle(preset)}
+              />
+              <span>{preset.label}</span>
+            </button>
+          ))}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function CowartAspectLockIcon({ locked }) {
+  if (locked) {
+    return (
+      <svg
+        aria-hidden="true"
+        className="cowart-ai-lock-icon"
+        viewBox="0 0 20 20"
+      >
+        <rect x="4.5" y="8.5" width="11" height="8" rx="2" />
+        <path d="M7 8.5V6a3 3 0 0 1 6 0v2.5" />
+      </svg>
+    )
+  }
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="cowart-ai-lock-icon"
+      viewBox="0 0 20 20"
+    >
+      <rect x="4.5" y="8.5" width="11" height="8" rx="2" />
+      <path d="M7 8.5V6.5a3 3 0 0 1 5.8-1.1" />
+    </svg>
+  )
 }
 
 function CowartToolbarItem({ toolId }) {
@@ -684,6 +1083,7 @@ export default function App() {
   const [snapshot, setSnapshot] = useState()
   const [viewState, setViewState] = useState()
   const [loadError, setLoadError] = useState(null)
+  const [skippedRecords, setSkippedRecords] = useState([])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -704,7 +1104,9 @@ export default function App() {
           canvasResponse.json(),
           viewStateResponse.json()
         ])
-        setSnapshot(canvasData.snapshot ?? null)
+        const sanitized = sanitizeCanvasSnapshotForTldraw(canvasData.snapshot)
+        setSnapshot(sanitized.snapshot)
+        setSkippedRecords(sanitized.skippedRecords)
         setViewState(viewStateData.viewState ?? null)
       } catch (error) {
         if (error.name === 'AbortError') return
@@ -874,9 +1276,14 @@ export default function App() {
         const canvasData = await response.json()
         const effectivePreserve =
           preserveLocalChanges || (preFetchStore && storeChangedSinceSnapshot(editor, preFetchStore))
-        const changedRecords = applyRemoteCanvasSnapshot(editor, canvasData.snapshot, {
-          preserveLocalChanges: effectivePreserve
-        })
+        const { changedRecords, skippedRecords: nextSkippedRecords } = applyRemoteCanvasSnapshot(
+          editor,
+          canvasData.snapshot,
+          {
+            preserveLocalChanges: effectivePreserve
+          }
+        )
+        setSkippedRecords(nextSkippedRecords)
 
         if (changedRecords > 0 && effectivePreserve) {
           hasUnsavedChanges = true
@@ -1012,14 +1419,39 @@ export default function App() {
 
   return (
     <main className="cowart-canvas" aria-label="Cowart infinite canvas">
+      <SkippedRecordsNotice records={skippedRecords} />
       <Tldraw
         snapshot={snapshot ?? undefined}
         inferDarkMode
         onMount={handleMount}
         overrides={cowartUiOverrides}
         components={cowartComponents}
+        shapeUtils={cowartShapeUtils}
         tools={[CowartAnnotationTool]}
       />
     </main>
+  )
+}
+
+function SkippedRecordsNotice({ records }) {
+  if (!records.length) return null
+
+  return (
+    <aside className="cowart-skipped-records" aria-live="polite">
+      <strong>Skipped {records.length} invalid canvas record{records.length === 1 ? '' : 's'}.</strong>
+      <span>Valid content was loaded.</span>
+      <details>
+        <summary>Details</summary>
+        <ul>
+          {records.slice(0, 8).map((record, index) => (
+            <li key={`${record.id}:${index}`}>
+              <code>{record.id}</code>
+              {record.typeName ? ` ${record.typeName}` : ''}
+              {record.type ? `/${record.type}` : ''}: {record.reason}
+            </li>
+          ))}
+        </ul>
+      </details>
+    </aside>
   )
 }
