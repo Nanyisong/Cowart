@@ -18,6 +18,7 @@ import {
   pageDirName,
   pathResolve,
   readCowartCanvasState,
+  readCowartPageAsset,
   readCowartSelectionState,
   readCowartViewState,
   resolveCanvasDir,
@@ -38,6 +39,7 @@ const TOOL_SAVE_VIEW_STATE = "save_cowart_view_state";
 const TOOL_GET_SELECTION = "get_cowart_selection";
 const TOOL_INSERT_IMAGE = "insert_cowart_image";
 const TOOL_SAVE_REFERENCE_IMAGE = "save_cowart_reference_image";
+const TOOL_READ_PAGE_ASSET = "read_cowart_page_asset";
 
 const PAGE_ID_PREFIX = "page:";
 const COWART_WIDGET_URI = "ui://widget/cowart/canvas.html";
@@ -62,7 +64,7 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Render and update the native Cowart Codex widget. Use render_cowart_canvas_widget to open the canvas for the active project, get_cowart_selection for persisted widget selection, save_cowart_reference_image for widget-provided reference images, and insert_cowart_image to place or replace bitmap assets in the project-backed canvas without hand-writing tldraw records.",
+      "Render and update the native Cowart Codex widget. Use render_cowart_canvas_widget to open the canvas for the active project, get_cowart_selection for persisted widget selection, save_cowart_reference_image for widget-provided reference images, read_cowart_page_asset for lazy widget image loading, and insert_cowart_image to place or replace bitmap assets in the project-backed canvas without hand-writing tldraw records.",
   },
 );
 
@@ -646,7 +648,7 @@ function registerCowartStateTools(mcpServer) {
       },
     },
     async (input = {}) => {
-      const state = await readCowartCanvasState(input, { hydrateAssets: input.hydrateAssets !== false });
+      const state = await readCowartCanvasState(input, { hydrateAssets: input.hydrateAssets === true });
       return {
         content: [
           {
@@ -655,6 +657,37 @@ function registerCowartStateTools(mcpServer) {
           },
         ],
         structuredContent: state,
+      };
+    },
+  );
+
+  mcpServer.registerTool(
+    TOOL_READ_PAGE_ASSET,
+    {
+      title: "Read Cowart Page Asset",
+      description:
+        "Read one project-local Cowart /page-assets/... image for lazy widget rendering. Prefer this over hydrating all assets into the canvas snapshot.",
+      inputSchema: {
+        ...projectArgsSchema,
+        assetUrl: z.string().trim(),
+      },
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input = {}) => {
+      const asset = await readCowartPageAsset(input, { assetUrl: input.assetUrl });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Loaded Cowart page asset ${asset.assetUrl}.`,
+          },
+        ],
+        structuredContent: asset,
       };
     },
   );

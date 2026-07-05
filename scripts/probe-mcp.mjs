@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -27,6 +27,7 @@ try {
     "save_cowart_selection_state",
     "save_cowart_view_state",
     "save_cowart_reference_image",
+    "read_cowart_page_asset",
     "get_cowart_selection",
     "insert_cowart_image",
   ];
@@ -66,6 +67,26 @@ try {
   }
   if (!String(stateResult.structuredContent?.canvasDir || "").endsWith("/canvas")) {
     throw new Error("Cowart canvas state did not report a project-local canvas directory.");
+  }
+  if ((stateResult.structuredContent?.hydratedAssets || []).length !== 0) {
+    throw new Error("Cowart canvas state should not hydrate image assets by default.");
+  }
+
+  const probePageAssetDir = path.join(projectDir, "canvas", "pages", "probe-page", "assets");
+  await mkdir(probePageAssetDir, { recursive: true });
+  await writeFile(
+    path.join(probePageAssetDir, "tiny.png"),
+    Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64"),
+  );
+  const pageAssetResult = await client.callTool({
+    name: "read_cowart_page_asset",
+    arguments: {
+      projectDir,
+      assetUrl: "/page-assets/probe-page/tiny.png",
+    },
+  });
+  if (pageAssetResult.structuredContent?.mimeType !== "image/png" || !pageAssetResult.structuredContent?.dataBase64) {
+    throw new Error("Cowart page asset tool did not return the expected png payload.");
   }
 
   const resource = await client.readResource({

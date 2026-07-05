@@ -61,6 +61,7 @@ import {
   IS_COWART_WIDGET_BUILD,
   hasCowartWidgetBridge,
   loadCowartCanvasState,
+  readCowartPageAsset,
   refreshCowartCanvasSnapshot,
   saveCowartCanvasSnapshot,
   saveCowartReferenceImage,
@@ -74,6 +75,8 @@ import {
 } from './canvasSnapshot.js'
 
 const SELECTION_STATE_ELEMENT_ID = 'cowart-selection-state'
+const PAGE_ASSETS_ROUTE = '/page-assets/'
+const GLOBAL_ASSETS_ROUTE = '/assets/'
 const AI_IMAGE_TOOL_ID = 'ai-image'
 const AI_IMAGE_HOLDER_LABEL = 'AI 图片'
 const AI_IMAGE_HOLDER_DEFAULT_W = 512
@@ -150,6 +153,17 @@ const iconSvgSources = import.meta.glob(
   { eager: true, query: '?raw', import: 'default' }
 )
 const cowartAssetUrls = buildCowartAssetUrls()
+const cowartAssetObjectUrlCache = new Map()
+const cowartAssetSourceKeys = new Map()
+
+const cowartTldrawAssetStore = {
+  upload: async (_asset, file) => ({ src: await readFileAsDataUrl(file) }),
+  resolve: resolveCowartTldrawAssetUrl
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', revokeCowartAssetObjectUrls, { once: true })
+}
 
 function buildCowartAssetUrls() {
   const icons = {}
@@ -164,6 +178,75 @@ function buildCowartAssetUrls() {
     console.warn('Cowart could not load bundled tldraw asset URLs.', error)
   }
   return { ...base, icons: { ...base.icons, ...icons } }
+}
+
+function isCowartLocalAssetUrl(src) {
+  return typeof src === 'string' && (src.startsWith(PAGE_ASSETS_ROUTE) || src.startsWith(GLOBAL_ASSETS_ROUTE))
+}
+
+function cowartAssetCacheKey(asset) {
+  const src = asset?.props?.src ?? ''
+  const fileSize = asset?.props?.fileSize ?? ''
+  const mimeType = asset?.props?.mimeType ?? ''
+  const name = asset?.props?.name ?? ''
+  return [src, fileSize, mimeType, name].join('\u001f')
+}
+
+function revokeCowartCachedAsset(cacheKey) {
+  const cached = cowartAssetObjectUrlCache.get(cacheKey)
+  if (!cached) return
+  URL.revokeObjectURL(cached.objectUrl)
+  cowartAssetObjectUrlCache.delete(cacheKey)
+  if (cowartAssetSourceKeys.get(cached.src) === cacheKey) {
+    cowartAssetSourceKeys.delete(cached.src)
+  }
+}
+
+function revokeCowartAssetObjectUrls() {
+  for (const cacheKey of Array.from(cowartAssetObjectUrlCache.keys())) {
+    revokeCowartCachedAsset(cacheKey)
+  }
+}
+
+function blobFromBase64(dataBase64, mimeType) {
+  const binary = window.atob(String(dataBase64 || ''))
+  const chunks = []
+  const chunkSize = 8192
+  for (let offset = 0; offset < binary.length; offset += chunkSize) {
+    const slice = binary.slice(offset, offset + chunkSize)
+    const bytes = new Uint8Array(slice.length)
+    for (let index = 0; index < slice.length; index += 1) {
+      bytes[index] = slice.charCodeAt(index)
+    }
+    chunks.push(bytes)
+  }
+  return new Blob(chunks, { type: mimeType || 'application/octet-stream' })
+}
+
+async function resolveCowartTldrawAssetUrl(asset) {
+  const src = asset?.props?.src
+  if (!src) return null
+  if (!hasCowartWidgetBridge() || !isCowartLocalAssetUrl(src)) return src
+
+  const cacheKey = cowartAssetCacheKey(asset)
+  const cached = cowartAssetObjectUrlCache.get(cacheKey)
+  if (cached) return cached.objectUrl
+
+  const previousKey = cowartAssetSourceKeys.get(src)
+  if (previousKey && previousKey !== cacheKey) {
+    revokeCowartCachedAsset(previousKey)
+  }
+
+  try {
+    const pageAsset = await readCowartPageAsset(src)
+    const objectUrl = URL.createObjectURL(blobFromBase64(pageAsset.dataBase64, pageAsset.mimeType))
+    cowartAssetObjectUrlCache.set(cacheKey, { objectUrl, src })
+    cowartAssetSourceKeys.set(src, cacheKey)
+    return objectUrl
+  } catch (error) {
+    console.warn('Cowart could not resolve local page asset through MCP; falling back to source URL.', error)
+    return src
+  }
 }
 
 function recordsAreEqual(left, right) {
@@ -2213,6 +2296,7 @@ export default function App() {
       <Tldraw
         snapshot={snapshot ?? undefined}
         assetUrls={cowartAssetUrls}
+        assets={cowartTldrawAssetStore}
         inferDarkMode
         onMount={handleMount}
         overrides={cowartUiOverrides}

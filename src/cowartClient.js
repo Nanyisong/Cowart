@@ -7,6 +7,7 @@ const TOOL_SAVE_CANVAS_STATE = 'save_cowart_canvas_state'
 const TOOL_SAVE_SELECTION_STATE = 'save_cowart_selection_state'
 const TOOL_SAVE_VIEW_STATE = 'save_cowart_view_state'
 const TOOL_SAVE_REFERENCE_IMAGE = 'save_cowart_reference_image'
+const TOOL_READ_PAGE_ASSET = 'read_cowart_page_asset'
 const WIDGET_PAYLOAD_TIMEOUT_MS = 5000
 
 globalThis.__COWART_WIDGET_FETCH_GUARD__ = true
@@ -108,7 +109,7 @@ export async function loadCowartCanvasState(signal) {
   if (hasCowartWidgetBridge()) {
     const state = await callCowartServerTool(
       TOOL_GET_CANVAS_STATE,
-      { hydrateAssets: true },
+      { hydrateAssets: false },
       { signal }
     )
     return {
@@ -135,7 +136,7 @@ export async function refreshCowartCanvasSnapshot(signal) {
   if (hasCowartWidgetBridge()) {
     const state = await callCowartServerTool(
       TOOL_GET_CANVAS_STATE,
-      { hydrateAssets: true },
+      { hydrateAssets: false },
       { signal }
     )
     return state.snapshot
@@ -191,4 +192,12 @@ export async function saveCowartReferenceImage(reference) {
   }
 
   return callCowartServerTool(TOOL_SAVE_REFERENCE_IMAGE, reference)
+}
+
+export async function readCowartPageAsset(assetUrl, options = {}) {
+  if (!hasCowartWidgetBridge()) {
+    throw new Error('当前 Cowart 画布没有可用的 Codex MCP 文件读取桥。')
+  }
+
+  return callCowartServerTool(TOOL_READ_PAGE_ASSET, { assetUrl }, options)
 }

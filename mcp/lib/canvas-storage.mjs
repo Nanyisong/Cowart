@@ -570,7 +570,37 @@ export async function writeCowartPageAsset(args = {}, options = {}) {
   };
 }
 
-export async function readCowartCanvasState(args = {}, { hydrateAssets = true } = {}) {
+export async function readCowartPageAsset(args = {}, options = {}) {
+  const assetUrl = nonEmptyString(options.assetUrl);
+  if (!assetUrl) throw new Error("assetUrl is required to read a Cowart page asset.");
+  if (!assetUrl.startsWith(PAGE_ASSETS_ROUTE) && !assetUrl.startsWith(GLOBAL_ASSETS_ROUTE)) {
+    throw new Error(`Unsupported Cowart asset URL: ${assetUrl}`);
+  }
+
+  const filePath = localAssetFilePathFromUrl(assetUrl, args);
+  if (!filePath) throw new Error(`Unsafe Cowart asset URL: ${assetUrl}`);
+
+  const fileStat = await stat(filePath);
+  if (!fileStat.isFile()) throw new Error(`Cowart asset is not a file: ${assetUrl}`);
+
+  const mimeType = mimeTypes.get(extname(filePath).toLowerCase()) || "application/octet-stream";
+  if (!mimeType.startsWith("image/")) {
+    throw new Error(`Cowart page assets only expose image payloads. Received ${mimeType}.`);
+  }
+
+  const buffer = await readFile(filePath);
+  return {
+    ok: true,
+    canvasDir: resolveCanvasDir(args),
+    assetUrl,
+    assetPath: filePath,
+    mimeType,
+    fileSize: fileStat.size,
+    dataBase64: buffer.toString("base64"),
+  };
+}
+
+export async function readCowartCanvasState(args = {}, { hydrateAssets = false } = {}) {
   const { projectDir, canvasDir } = resolveCowartPaths(args);
   const loaded = await loadStoredCanvasSnapshot(args);
   const hydrated = hydrateAssets
