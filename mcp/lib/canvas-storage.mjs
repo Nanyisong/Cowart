@@ -16,6 +16,8 @@ const mimeTypes = new Map([
   [".png", "image/png"],
   [".svg", "image/svg+xml"],
   [".webp", "image/webp"],
+  [".htm", "text/html"],
+  [".html", "text/html"],
 ]);
 
 export function nonEmptyString(value) {
@@ -220,6 +222,8 @@ function extensionFromMimeType(mimeType) {
       return ".svg";
     case "image/webp":
       return ".webp";
+    case "text/html":
+      return ".html";
     default:
       return ".bin";
   }
@@ -584,8 +588,8 @@ export async function readCowartPageAsset(args = {}, options = {}) {
   if (!fileStat.isFile()) throw new Error(`Cowart asset is not a file: ${assetUrl}`);
 
   const mimeType = mimeTypes.get(extname(filePath).toLowerCase()) || "application/octet-stream";
-  if (!mimeType.startsWith("image/")) {
-    throw new Error(`Cowart page assets only expose image payloads. Received ${mimeType}.`);
+  if (!mimeType.startsWith("image/") && mimeType !== "text/html") {
+    throw new Error(`Cowart page assets only expose image or HTML payloads. Received ${mimeType}.`);
   }
 
   const buffer = await readFile(filePath);

@@ -8,6 +8,7 @@ const TOOL_SAVE_SELECTION_STATE = 'save_cowart_selection_state'
 const TOOL_SAVE_VIEW_STATE = 'save_cowart_view_state'
 const TOOL_SAVE_REFERENCE_IMAGE = 'save_cowart_reference_image'
 const TOOL_READ_PAGE_ASSET = 'read_cowart_page_asset'
+const TOOL_DOWNLOAD_FILE = 'download_cowart_file'
 const WIDGET_PAYLOAD_TIMEOUT_MS = 5000
 
 globalThis.__COWART_WIDGET_FETCH_GUARD__ = true
@@ -192,6 +193,14 @@ export async function saveCowartReferenceImage(reference) {
   }
 
   return callCowartServerTool(TOOL_SAVE_REFERENCE_IMAGE, reference)
+}
+
+export async function downloadCowartFile(download) {
+  if (!hasCowartWidgetBridge()) {
+    throw new Error('当前 Cowart 画布没有可用的 Codex MCP 文件下载桥。')
+  }
+
+  return callCowartServerTool(TOOL_DOWNLOAD_FILE, download)
 }
 
 export async function readCowartPageAsset(assetUrl, options = {}) {

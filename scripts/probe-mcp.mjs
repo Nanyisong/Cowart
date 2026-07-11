@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -16,6 +16,8 @@ const client = new Client({
 });
 
 await client.connect(transport);
+
+let downloadedProbePath = null;
 
 function isCanvasDirectory(value) {
   const canvasDir = String(value || "");
@@ -36,8 +38,10 @@ try {
     "save_cowart_view_state",
     "save_cowart_reference_image",
     "read_cowart_page_asset",
+    "download_cowart_file",
     "get_cowart_selection",
     "insert_cowart_image",
+    "insert_cowart_html_draft",
   ];
 
   for (const toolName of requiredTools) {
@@ -86,6 +90,7 @@ try {
     path.join(probePageAssetDir, "tiny.png"),
     Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64"),
   );
+  await writeFile(path.join(probePageAssetDir, "draft.html"), "<!doctype html><html><body>draft</body></html>");
   const pageAssetResult = await client.callTool({
     name: "read_cowart_page_asset",
     arguments: {
@@ -96,6 +101,29 @@ try {
   if (pageAssetResult.structuredContent?.mimeType !== "image/png" || !pageAssetResult.structuredContent?.dataBase64) {
     throw new Error("Cowart page asset tool did not return the expected png payload.");
   }
+  const htmlAssetResult = await client.callTool({
+    name: "read_cowart_page_asset",
+    arguments: {
+      projectDir,
+      assetUrl: "/page-assets/probe-page/draft.html",
+    },
+  });
+  if (htmlAssetResult.structuredContent?.mimeType !== "text/html" || !htmlAssetResult.structuredContent?.dataBase64) {
+    throw new Error("Cowart page asset tool did not return the expected html payload.");
+  }
+
+  const downloadResult = await client.callTool({
+    name: "download_cowart_file",
+    arguments: {
+      projectDir,
+      assetUrl: "/page-assets/probe-page/tiny.png",
+      fileName: `cowart-download-probe-${process.pid}.png`,
+    },
+  });
+  downloadedProbePath = downloadResult.structuredContent?.filePath;
+  if (!downloadedProbePath || !(await readFile(downloadedProbePath)).length) {
+    throw new Error("Cowart download tool did not write the expected file into Downloads.");
+  }
 
   const resource = await client.readResource({
     uri: "ui://widget/cowart/canvas.html",
@@ -105,6 +133,10 @@ try {
   const resourceDomains = widgetCsp.resource_domains || [];
   if (!resourceDomains.includes("data:") || !resourceDomains.includes("blob:")) {
     throw new Error(`Cowart widget CSP should allow local data/blob resources. Found: ${resourceDomains.join(", ")}`);
+  }
+  const frameDomains = widgetCsp.frame_domains || [];
+  if (!frameDomains.includes("data:") || !frameDomains.includes("blob:")) {
+    throw new Error(`Cowart widget CSP should allow local data/blob iframes for HTML drafts. Found: ${frameDomains.join(", ")}`);
   }
 
   const widgetHtml = resource.contents?.[0]?.text || "";
@@ -123,5 +155,8 @@ try {
 
   console.log("OK: Cowart MCP tools and native widget resource are available.");
 } finally {
+  if (downloadedProbePath) {
+    await unlink(downloadedProbePath).catch(() => undefined);
+  }
   await client.close();
 }

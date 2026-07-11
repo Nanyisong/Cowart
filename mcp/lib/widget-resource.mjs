@@ -39,22 +39,29 @@ export function registerWidgetResource(
     prefersBorder = false,
     connectDomains = [],
     resourceDomains = [],
+    frameDomains = [],
   },
 ) {
+  const csp = {
+    connectDomains,
+    resourceDomains,
+  };
+  if (frameDomains.length > 0) csp.frameDomains = frameDomains;
+
+  const openAiCsp = {
+    connect_domains: connectDomains,
+    resource_domains: resourceDomains,
+  };
+  if (frameDomains.length > 0) openAiCsp.frame_domains = frameDomains;
+
   const metadata = {
     ui: {
       prefersBorder,
-      csp: {
-        connectDomains,
-        resourceDomains,
-      },
+      csp,
     },
     "openai/widgetDescription": description,
     "openai/widgetPrefersBorder": prefersBorder,
-    "openai/widgetCSP": {
-      connect_domains: connectDomains,
-      resource_domains: resourceDomains,
-    },
+    "openai/widgetCSP": openAiCsp,
   };
 
   registerAppResource(

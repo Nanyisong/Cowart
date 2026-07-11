@@ -29,7 +29,9 @@ const mimeTypes = new Map([
   ['.jpeg', 'image/jpeg'],
   ['.png', 'image/png'],
   ['.svg', 'image/svg+xml'],
-  ['.webp', 'image/webp']
+  ['.webp', 'image/webp'],
+  ['.htm', 'text/html; charset=utf-8'],
+  ['.html', 'text/html; charset=utf-8']
 ])
 
 function sendJson(res, statusCode, payload) {
@@ -225,6 +227,8 @@ function extensionFromMimeType(mimeType) {
       return '.svg'
     case 'image/webp':
       return '.webp'
+    case 'text/html':
+      return '.html'
     default:
       return '.bin'
   }
