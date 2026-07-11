@@ -125,6 +125,7 @@ const ANNOTATION_LABEL_POSITION = 0
 const ANNOTATION_SELECT_TEXT_MAX_ATTEMPTS = 8
 const ANNOTATION_SELECT_TEXT_SETTLE_ATTEMPTS = 4
 const ANNOTATION_EDIT_TOOL_LABEL = '按标注修改'
+const ANNOTATION_HTML_TOOL_LABEL = '按标注生成 Html'
 const ANNOTATION_EDIT_PROMPT = [
   '[@cowart](plugin://cowart@personal) 按标注修改',
   '',
@@ -133,6 +134,17 @@ const ANNOTATION_EDIT_PROMPT = [
   '- 请把标注文字当作修改要求，生成一张新的干净图片。',
   '- 不要把标注箭头、标注文字、蓝色选框或工具栏带进最终图片。',
   '- 保留原图和原标注不动，把新图放到原图旁边。'
+].join('\n')
+const ANNOTATION_HTML_PROMPT = [
+  '[@cowart](plugin://cowart@personal) 按标注生成 AI Html',
+  '',
+  '请根据这张 Cowart 截图里的当前图片和周围标注，生成一个新的单文件 HTML 草稿：',
+  '- 截图包含当前选中的图片，以及连到图片里或图片附近的标注箭头和标注文字。',
+  '- 请把当前图片作为主体、构图和视觉风格参考，把标注文字作为 HTML 的修改或生成要求。',
+  '- 这不是图片生成任务：不要调用 imagegen，不要调用 insert_cowart_image。',
+  '- 请生成完整可运行的 HTML 文档，CSS 和 JS 尽量内联，适合直接放进 iframe 预览。',
+  '- 不要把标注箭头、标注文字、蓝色选框或工具栏写进 HTML。',
+  '- 保留原图片和原标注不动，把新 HTML 草稿放到原图片右侧。'
 ].join('\n')
 const ANNOTATION_EDIT_EXPORT_PADDING = 32
 const ANNOTATION_EDIT_NEAR_MARGIN_MIN = 160
@@ -835,6 +847,36 @@ function buildAnnotationEditPrompt({ imageShapeId, shapeIds, exportWidth, export
   return lines.join('\n')
 }
 
+function buildAnnotationHtmlPrompt({ imageShape, shapeIds, exportWidth, exportHeight, screenshotAsset }) {
+  const targetWidth = Math.round(Number(imageShape.props?.w) || AI_IMAGE_HOLDER_DEFAULT_W)
+  const targetHeight = Math.round(Number(imageShape.props?.h) || AI_IMAGE_HOLDER_DEFAULT_H)
+  const ratio = targetHeight ? targetWidth / targetHeight : 1
+  const annotationCount = Math.max(0, shapeIds.length - 1)
+  return [
+    ANNOTATION_HTML_PROMPT,
+    '',
+    `Cowart source image shape: ${imageShape.id}`,
+    `Target canvas HTML size: ${targetWidth} x ${targetHeight} canvas units.`,
+    `Target aspect ratio: ${targetWidth}:${targetHeight} (${ratio.toFixed(3)} width/height).`,
+    `Included annotation shapes: ${annotationCount}`,
+    `Screenshot size: ${Math.round(exportWidth)}x${Math.round(exportHeight)}`,
+    ...(screenshotAsset?.assetPath
+      ? [
+          `Annotation screenshot local path: ${screenshotAsset.assetPath}`,
+          'Use this local screenshot as the authoritative visual reference and annotation brief.'
+        ]
+      : []),
+    '',
+    'Required completion step:',
+    `- Call insert_cowart_html_draft with anchorShapeId: "${imageShape.id}", replaceDraftHolder: false, placement: "right", margin: 40, matchAnchor: true, displayWidth: ${targetWidth}, and displayHeight: ${targetHeight}.`,
+    '- Pass the final complete HTML document as htmlContent.',
+    '- Use a new short .html fileName that describes the result.',
+    '- Do not pass draftShapeId for the source image and do not update or replace any existing shape.',
+    '- Set shapeMeta.cowartGeneratedFromImageAnnotationHtml to true.',
+    '- The returned shapeId must be a new HTML draft shape placed to the right of the source image.'
+  ].join('\n')
+}
+
 function getAnnotationEditExportPixelRatio(bounds) {
   const maxDimension = Math.max(bounds.w, bounds.h)
   if (maxDimension > 1600) return 1
@@ -845,6 +887,11 @@ function getAnnotationEditExportPixelRatio(bounds) {
 function annotationEditScreenshotFileName() {
   const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
   return `annotation-edit-${timestamp}.png`
+}
+
+function annotationHtmlScreenshotFileName() {
+  const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
+  return `image-annotation-html-${timestamp}.png`
 }
 
 function dataUrlToImageContent(dataUrl, meta = {}) {
@@ -926,6 +973,55 @@ async function sendAnnotationEditRequest(editor, imageShapeId) {
     content.push(
       dataUrlToImageContent(exportResult.url, {
         cowartAnnotationEdit: true,
+        cowartSourceImageShapeId: imageShapeId,
+        cowartIncludedShapeIds: shapeIds,
+        cowartAnnotationScreenshotPath: screenshotAsset.assetPath || null,
+        cowartAnnotationScreenshotFileName: screenshotAsset.fileName || null
+      })
+    )
+  }
+
+  return sender({ prompt, content })
+}
+
+async function sendAnnotationHtmlRequest(editor, imageShapeId) {
+  const imageShape = editor.getShape(imageShapeId)
+  if (!isImageShape(imageShape)) throw new Error('请选择一张图片后再按标注生成 Html。')
+
+  const shapeIds = collectAnnotationEditShapeIds(editor, imageShapeId)
+  const rawBounds = editor.getShapesPageBounds(shapeIds)
+  if (!rawBounds) throw new Error('无法计算截图范围。')
+
+  const exportBounds = expandBox(rawBounds, ANNOTATION_EDIT_EXPORT_PADDING)
+  const exportResult = await editor.toImageDataUrl(shapeIds, {
+    bounds: exportBounds,
+    background: true,
+    darkMode: false,
+    format: 'png',
+    padding: 0,
+    pixelRatio: getAnnotationEditExportPixelRatio(exportBounds)
+  })
+  const screenshotAsset = await saveCowartReferenceImage({
+    anchorShapeId: imageShapeId,
+    fileName: annotationHtmlScreenshotFileName(),
+    dataUrl: exportResult.url,
+    mimeType: 'image/png'
+  })
+  const prompt = buildAnnotationHtmlPrompt({
+    imageShape,
+    shapeIds,
+    exportWidth: exportResult.width,
+    exportHeight: exportResult.height,
+    screenshotAsset
+  })
+  const sender = followUpSender()
+  if (!sender) throw new Error('当前 Cowart 画布没有可用的 Codex MCP 消息桥。')
+
+  const content = [{ type: 'text', text: prompt }]
+  if (supportsCowartMessageImages()) {
+    content.push(
+      dataUrlToImageContent(exportResult.url, {
+        cowartAnnotationHtml: true,
         cowartSourceImageShapeId: imageShapeId,
         cowartIncludedShapeIds: shapeIds,
         cowartAnnotationScreenshotPath: screenshotAsset.assetPath || null,
@@ -3252,7 +3348,12 @@ function CowartImageToolbarContent() {
         onManipulatingEnd={handleManipulatingEnd}
         onManipulatingStart={handleManipulatingStart}
       />
-      {!isInCropTool && <CowartAnnotationEditToolbarButton imageShapeId={imageShapeId} />}
+      {!isInCropTool && (
+        <>
+          <CowartAnnotationEditToolbarButton imageShapeId={imageShapeId} />
+          <CowartAnnotationHtmlToolbarButton imageShapeId={imageShapeId} />
+        </>
+      )}
     </>
   )
 }
@@ -3386,6 +3487,66 @@ function CowartAnnotationEditToolbarButton({ imageShapeId }) {
         small
       />
       <span className="cowart-annotation-edit-toolbar-label">{ANNOTATION_EDIT_TOOL_LABEL}</span>
+    </TldrawUiToolbarButton>
+  )
+}
+
+function CowartAnnotationHtmlToolbarButton({ imageShapeId }) {
+  const editor = useEditor()
+  const [status, setStatus] = useState('idle')
+
+  useEffect(() => {
+    setStatus('idle')
+  }, [imageShapeId])
+
+  useEffect(() => {
+    if (status === 'idle' || status === 'sending') return undefined
+    const timer = window.setTimeout(() => setStatus('idle'), ANNOTATION_EDIT_STATUS_RESET_MS)
+    return () => window.clearTimeout(timer)
+  }, [status])
+
+  async function handleClick() {
+    if (status === 'sending') return
+
+    setStatus('sending')
+    try {
+      await sendAnnotationHtmlRequest(editor, imageShapeId)
+      setStatus('sent')
+    } catch (error) {
+      console.error(error)
+      setStatus('error')
+    }
+  }
+
+  const title =
+    status === 'sending'
+      ? '正在提交 Html 生成请求'
+      : status === 'sent'
+        ? '已提交 Html 生成请求'
+        : status === 'error'
+          ? '提交失败，请重试'
+          : ANNOTATION_HTML_TOOL_LABEL
+
+  return (
+    <TldrawUiToolbarButton
+      aria-label={title}
+      className="cowart-annotation-edit-toolbar-button cowart-annotation-html-toolbar-button"
+      data-status={status}
+      data-testid="tool.cowart-annotation-html"
+      disabled={status === 'sending'}
+      onClick={handleClick}
+      title={title}
+      type="icon"
+    >
+      {status === 'sent' || status === 'error' ? (
+        <TldrawUiButtonIcon
+          icon={status === 'sent' ? 'check' : 'warning-triangle'}
+          small
+        />
+      ) : (
+        aiHtmlToolIcon
+      )}
+      <span className="cowart-annotation-edit-toolbar-label">{ANNOTATION_HTML_TOOL_LABEL}</span>
     </TldrawUiToolbarButton>
   )
 }
