@@ -113,6 +113,8 @@ Cowart sends the prompt, reference images, and selected `AI 图片` slot dimensi
 
 The generated HTML is stored as an embedded canvas page in the current page's `assets/` directory. Select it to download a rendered image, edit text directly, continue revising the HTML with canvas annotations, or generate an image from the HTML and its annotations.
 
+![Edit Cowart AI HTML](assets/edit-html.png)
+
 ### Create And Present AI Slides
 
 1. Create `AI Slides` from the toolbar. The default frame is `1048 × 600`, providing room for one `1024 × 576` (16:9) page with `12px` padding on every side.
@@ -120,6 +122,8 @@ The generated HTML is stored as an embedded canvas page in the current page's `a
 3. Selecting an empty Slides frame opens its generation panel. Describe the deck, optionally add reference images, and choose 3, 5, 10, or a custom number of pages. The default is 5 pages.
 4. After you send the request, Codex generates the requested number of visually and narratively coordinated standalone 16:9 HTML pages and appends them to the current Slides frame. The generation panel is hidden once the frame contains content.
 5. Select the Slides frame and click `演示 Slides` to preview and navigate with the thumbnail sidebar or enter fullscreen playback. In fullscreen, use the arrow keys, Space, or click static slide content to advance. Buttons, links, and form controls inside HTML remain interactive, and the playback controls stay at the top.
+
+![Present and navigate Cowart AI Slides](assets/view-slides.png)
 
 ### Generate From An Annotation Screenshot
 
