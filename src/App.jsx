@@ -96,15 +96,15 @@ const AI_DRAFT_HOLDER_LABEL = 'AI HTML'
 const AI_SLIDES_TOOL_ID = 'ai-slides'
 const AI_SLIDES_LABEL = 'AI Slides'
 const AI_SLIDES_PRESENT_LABEL = '演示 Slides'
-const AI_SLIDES_DEFAULT_W = 1120
-const AI_SLIDES_DEFAULT_H = 360
-const AI_SLIDES_PADDING = 24
 const AI_SLIDES_GAP = 32
 const COWART_OPEN_SLIDES_EVENT = 'cowart:open-slides'
 const AI_IMAGE_HOLDER_DEFAULT_W = 512
 const AI_IMAGE_HOLDER_DEFAULT_H = 683
 const AI_DRAFT_HOLDER_DEFAULT_W = 1024
 const AI_DRAFT_HOLDER_DEFAULT_H = 576
+const AI_SLIDES_PADDING = 12
+const AI_SLIDES_DEFAULT_W = AI_DRAFT_HOLDER_DEFAULT_W + AI_SLIDES_PADDING * 2
+const AI_SLIDES_DEFAULT_H = AI_DRAFT_HOLDER_DEFAULT_H + AI_SLIDES_PADDING * 2
 const AI_IMAGE_SIZE_MIN = 16
 const AI_IMAGE_SIZE_MAX = 8192
 const AI_IMAGE_GENERATION_PANEL_OFFSET = 14
@@ -2660,8 +2660,43 @@ function CowartCanvasOverlay() {
   )
 }
 
-function CowartSlidesMedia({ shape, title }) {
+function isInteractiveHtmlClick(event) {
+  if (event.defaultPrevented || event.cancelBubble) return true
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return true
+
+  const interactiveSelector = [
+    'a[href]',
+    'button',
+    'input',
+    'select',
+    'textarea',
+    'summary',
+    'video',
+    'audio',
+    'canvas',
+    '[contenteditable="true"]',
+    '[onclick]',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="menuitem"]',
+    '[role="tab"]'
+  ].join(',')
+  const target = event.target
+  if (target?.closest?.(interactiveSelector)) return true
+
+  const win = target?.ownerDocument?.defaultView
+  let element = target?.nodeType === 1 ? target : target?.parentElement
+  while (element && element !== target?.ownerDocument?.documentElement) {
+    if (win?.getComputedStyle(element).cursor === 'pointer') return true
+    element = element.parentElement
+  }
+
+  return false
+}
+
+function CowartSlidesMedia({ onUnhandledHtmlClick, shape, title }) {
   const editor = useEditor()
+  const iframeClickCleanupRef = useRef(null)
   const [source, setSource] = useState(null)
   const [error, setError] = useState(null)
 
@@ -2729,6 +2764,44 @@ function CowartSlidesMedia({ shape, title }) {
     }
   }, [editor, shape.id, shape.props?.assetId, shape.props?.url, shape.meta?.cowartHtmlDraftAssetUrl])
 
+  useEffect(
+    () => () => {
+      iframeClickCleanupRef.current?.()
+      iframeClickCleanupRef.current = null
+    },
+    []
+  )
+
+  function handleHtmlFrameLoad(event) {
+    iframeClickCleanupRef.current?.()
+    iframeClickCleanupRef.current = null
+    if (!onUnhandledHtmlClick) return
+
+    try {
+      const iframeDocument = event.currentTarget.contentDocument
+      const iframeWindow = iframeDocument?.defaultView
+      if (!iframeDocument || !iframeWindow) return
+
+      const pendingTimers = new Set()
+      function handleHtmlClick(clickEvent) {
+        const timer = iframeWindow.setTimeout(() => {
+          pendingTimers.delete(timer)
+          if (!isInteractiveHtmlClick(clickEvent)) onUnhandledHtmlClick()
+        }, 0)
+        pendingTimers.add(timer)
+      }
+
+      iframeDocument.addEventListener('click', handleHtmlClick)
+      iframeClickCleanupRef.current = () => {
+        iframeDocument.removeEventListener('click', handleHtmlClick)
+        for (const timer of pendingTimers) iframeWindow.clearTimeout(timer)
+        pendingTimers.clear()
+      }
+    } catch (_error) {
+      // Cross-origin HTML keeps its own interactions; keyboard navigation remains available.
+    }
+  }
+
   if (source?.kind === 'image') {
     return <img alt={title} className="cowart-slides-media" draggable={false} src={source.url} />
   }
@@ -2738,6 +2811,7 @@ function CowartSlidesMedia({ shape, title }) {
       <iframe
         className="cowart-slides-media"
         frameBorder="0"
+        onLoad={handleHtmlFrameLoad}
         sandbox="allow-forms allow-popups allow-same-origin allow-scripts"
         src={source.kind === 'html-url' ? source.url : undefined}
         srcDoc={source.kind === 'html' ? source.htmlContent : undefined}
@@ -2750,7 +2824,7 @@ function CowartSlidesMedia({ shape, title }) {
   return <div className="cowart-slides-media-status">{error || 'Loading'}</div>
 }
 
-function CowartSlidesScaledMedia({ className = '', shape, title }) {
+function CowartSlidesScaledMedia({ className = '', onUnhandledHtmlClick, shape, title }) {
   const containerRef = useRef(null)
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
   const width = Math.max(1, Number(shape.props?.w) || 16)
@@ -2796,7 +2870,11 @@ function CowartSlidesScaledMedia({ className = '', shape, title }) {
             width: `${width}px`
           }}
         >
-          <CowartSlidesMedia shape={shape} title={title} />
+          <CowartSlidesMedia
+            onUnhandledHtmlClick={onUnhandledHtmlClick}
+            shape={shape}
+            title={title}
+          />
         </span>
       )}
     </span>
@@ -2867,6 +2945,7 @@ function CowartSlidesPresentationOverlay() {
     (delta) => setIndex((value) => Math.max(0, Math.min(total - 1, value + delta))),
     [total]
   )
+  const handleUnhandledHtmlClick = useCallback(() => go(1), [go])
 
   useEffect(() => {
     if (!slidesShapeId) return undefined
@@ -2953,6 +3032,7 @@ function CowartSlidesPresentationOverlay() {
           <div className="cowart-slides-present-slide">
             <CowartSlidesScaledMedia
               className="cowart-slides-present-media"
+              onUnhandledHtmlClick={handleUnhandledHtmlClick}
               shape={currentSlide}
               title={`第 ${index + 1} 页`}
             />
@@ -2973,7 +3053,18 @@ function CowartSlidesPresentationOverlay() {
       ) : (
         <>
           <header className="cowart-slides-viewer-header">
-            <div className="cowart-slides-deck-name">{deckName}</div>
+            <div className="cowart-slides-viewer-identity">
+              <button
+                aria-label="关闭演示页"
+                className="cowart-slides-close-button"
+                onClick={closeViewer}
+                type="button"
+              >
+                <X aria-hidden="true" size={18} strokeWidth={2} />
+              </button>
+              <span aria-hidden="true" className="cowart-slides-header-divider" />
+              <div className="cowart-slides-deck-name">{deckName}</div>
+            </div>
             <nav aria-label="翻页控制" className="cowart-slides-page-nav">
               <button aria-label="上一页" disabled={index === 0 || !total} onClick={() => go(-1)} type="button">
                 <ChevronLeft aria-hidden="true" size={18} strokeWidth={2} />
@@ -2987,9 +3078,6 @@ function CowartSlidesPresentationOverlay() {
               <button disabled={!currentSlide} onClick={playSlides} type="button">
                 <Play aria-hidden="true" size={15} strokeWidth={2} />
                 播放
-              </button>
-              <button aria-label="关闭演示页" onClick={closeViewer} type="button">
-                <X aria-hidden="true" size={18} strokeWidth={2} />
               </button>
             </div>
           </header>
