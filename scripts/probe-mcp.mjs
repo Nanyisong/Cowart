@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,6 +18,7 @@ const client = new Client({
 await client.connect(transport);
 
 let downloadedProbePath = null;
+let downloadedProbeDirectory = null;
 
 function isCanvasDirectory(value) {
   const canvasDir = String(value || "");
@@ -125,6 +126,29 @@ try {
     throw new Error("Cowart download tool did not write the expected file into Downloads.");
   }
 
+  const folderDownloadResult = await client.callTool({
+    name: "download_cowart_file",
+    arguments: {
+      projectDir,
+      dataUrl: "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Ctitle%3Eprobe%3C%2Ftitle%3E",
+      directoryName: `Cowart Slides Probe ${process.pid}`,
+      subdirectory: "pages",
+      fileName: "page-01.html",
+      mimeType: "text/html",
+      overwrite: true,
+      uniqueDirectory: true,
+    },
+  });
+  downloadedProbeDirectory = folderDownloadResult.structuredContent?.directoryPath;
+  const folderDownloadPath = folderDownloadResult.structuredContent?.filePath;
+  if (
+    !downloadedProbeDirectory ||
+    path.basename(path.dirname(folderDownloadPath || "")) !== "pages" ||
+    !(await readFile(folderDownloadPath, "utf8")).includes("<title>probe</title>")
+  ) {
+    throw new Error("Cowart download tool did not create the expected Slides export folder structure.");
+  }
+
   const resource = await client.readResource({
     uri: "ui://widget/cowart/canvas.html",
   });
@@ -157,6 +181,9 @@ try {
 } finally {
   if (downloadedProbePath) {
     await unlink(downloadedProbePath).catch(() => undefined);
+  }
+  if (downloadedProbeDirectory) {
+    await rm(downloadedProbeDirectory, { recursive: true, force: true }).catch(() => undefined);
   }
   await client.close();
 }

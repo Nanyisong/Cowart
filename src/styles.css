@@ -256,11 +256,55 @@ body {
 }
 
 .cowart-slides-present-button,
-.cowart-slides-annotation-button {
+.cowart-slides-annotation-button,
+.cowart-export-trigger {
   width: auto;
   min-width: 112px;
   padding: 0 12px;
   gap: 7px;
+}
+
+.cowart-export-menu {
+  position: relative;
+  display: flex;
+  align-self: stretch;
+}
+
+.cowart-html-draft__toolbar > .tlui-menu,
+.cowart-slides-toolbar > .tlui-menu {
+  overflow: visible;
+}
+
+.cowart-export-trigger {
+  min-width: 90px;
+}
+
+.cowart-export-trigger[data-status="sending"] {
+  opacity: 0.65;
+}
+
+.cowart-export-trigger[data-status="sent"] {
+  color: #1f8f4d;
+}
+
+.cowart-export-trigger[data-status="error"] {
+  color: #c2410c;
+}
+
+.cowart-export-chevron {
+  color: #71717a;
+  transition: transform 120ms ease;
+}
+
+.cowart-export-trigger[aria-expanded="true"] .cowart-export-chevron {
+  transform: rotate(180deg);
+}
+
+.cowart-export-popover {
+  right: auto;
+  left: 0;
+  bottom: calc(100% + 8px);
+  min-width: 164px;
 }
 
 .cowart-slides-annotation-button[data-status="sending"] {

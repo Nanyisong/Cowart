@@ -60,7 +60,7 @@ import {
 import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite'
 import { AllSelection } from '@tiptap/pm/state'
 import html2canvas from 'html2canvas'
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, FileCode, Image, Play, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, FileCode, Image as ImageIcon, Play, X } from 'lucide-react'
 import 'tldraw/tldraw.css'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import aiHtmlToolIconRaw from './assets/ai-html.svg?raw'
@@ -1718,7 +1718,7 @@ async function renderCowartHtmlDraftCanvas(shape, pixelRatio) {
   }
 }
 
-function htmlDraftDownloadFileName(shape) {
+function htmlDraftExportBaseName(shape) {
   const assetUrl = getCowartHtmlDraftAssetUrl(shape)
   const rawName = assetUrl?.split('/').pop()?.split(/[?#]/)[0]
   let htmlName = 'ai-draft.html'
@@ -1729,7 +1729,137 @@ function htmlDraftDownloadFileName(shape) {
       htmlName = rawName
     }
   }
-  return htmlName.replace(/\.html?$/i, '') + '.png'
+  return htmlName.replace(/\.html?$/i, '')
+}
+
+function htmlDraftExportFileName(shape, extension) {
+  return `${htmlDraftExportBaseName(shape)}.${extension}`
+}
+
+function textDataUrl(text, mimeType = 'text/plain') {
+  return `data:${mimeType};charset=utf-8,${encodeURIComponent(text)}`
+}
+
+async function readCowartHtmlDraftContent(shape) {
+  if (!isCowartHtmlDraftEmbedShape(shape)) {
+    throw new Error('请选择一个已生成 HTML 的 AI HTML。')
+  }
+
+  const directHtmlUrl = isCowartHtmlDraftDataUrl(shape.props?.url) ? shape.props.url : null
+  if (directHtmlUrl) {
+    const response = await window.fetch(directHtmlUrl)
+    if (!response.ok) throw new Error(`HTML 草稿读取失败：${response.status}`)
+    return response.text()
+  }
+
+  const assetUrl = getCowartHtmlDraftAssetUrl(shape)
+  if (!assetUrl) throw new Error('当前 HTML 草稿没有可导出的源文件。')
+  if (hasCowartWidgetBridge()) {
+    const pageAsset = await readCowartPageAsset(assetUrl)
+    return blobFromBase64(pageAsset.dataBase64, pageAsset.mimeType).text()
+  }
+
+  const response = await window.fetch(assetUrl)
+  if (!response.ok) throw new Error(`HTML 草稿读取失败：${response.status}`)
+  return response.text()
+}
+
+async function readCowartImageDataUrl(editor, imageShape) {
+  const asset = imageShape?.props?.assetId ? editor.getAsset(imageShape.props.assetId) : null
+  const sourceUrl = asset?.props?.src
+  if (!asset || !sourceUrl) throw new Error('当前图片没有可读取的原始文件。')
+
+  if (sourceUrl.startsWith(PAGE_ASSETS_ROUTE) && hasCowartWidgetBridge()) {
+    const pageAsset = await readCowartPageAsset(sourceUrl)
+    return `data:${pageAsset.mimeType};base64,${pageAsset.dataBase64}`
+  }
+  if (sourceUrl.startsWith('data:')) return sourceUrl
+
+  const resolvedUrl = /^https?:\/\//.test(sourceUrl)
+    ? sourceUrl
+    : await editor.resolveAssetUrl(asset.id, { shouldResolveToOriginal: true })
+  if (!resolvedUrl) throw new Error('无法读取当前图片的原始文件。')
+  const response = await window.fetch(resolvedUrl)
+  if (!response.ok) throw new Error(`读取当前图片失败：${response.status}`)
+  return readFileAsDataUrl(await response.blob())
+}
+
+function cowartSlidesExportName(slidesShape) {
+  const name = String(slidesShape?.props?.name || '').trim()
+  return name || AI_SLIDES_LABEL
+}
+
+function escapeHtmlText(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
+function cowartImageSlideHtml(dataUrl, title) {
+  const safeDataUrl = JSON.stringify(dataUrl).replaceAll('<', '\\u003c')
+  const safeTitle = JSON.stringify(title).replaceAll('<', '\\u003c')
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escapeHtmlText(title)}</title>
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000}
+    body{display:grid;place-items:center}img{display:block;width:100%;height:100%;object-fit:contain}
+  </style>
+</head>
+<body><img id="cowart-slide-image" alt=""></body>
+<script>
+  document.title=${safeTitle};
+  document.getElementById('cowart-slide-image').src=${safeDataUrl};
+</script>
+</html>`
+}
+
+function cowartSlidesPlayerHtml(slidesName, pageFiles) {
+  const safeTitle = JSON.stringify(slidesName).replaceAll('<', '\\u003c')
+  const safePages = JSON.stringify(pageFiles).replaceAll('<', '\\u003c')
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${escapeHtmlText(slidesName)} · Play</title>
+  <style>
+    *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font-family:Inter,system-ui,sans-serif}
+    .stage{position:fixed;inset:0;overflow:hidden;background:#000;cursor:pointer}
+    .canvas{position:absolute;width:1024px;height:576px;overflow:hidden;transform-origin:top left;background:#000}
+    iframe{display:block;width:1024px;height:576px;border:0;background:#fff}
+    .controls{position:fixed;z-index:2;top:16px;left:50%;display:flex;align-items:center;gap:2px;padding:4px;color:#fff;background:#0009;border-radius:9px;transform:translateX(-50%);backdrop-filter:blur(14px)}
+    button{display:grid;width:26px;height:26px;padding:0;place-items:center;color:#fff;background:transparent;border:0;border-radius:8px;cursor:pointer;font:18px/1 system-ui,sans-serif}
+    button:hover{background:#ffffff26}button:disabled{opacity:.35;cursor:default}.count{min-width:42px;text-align:center;font-size:12px;font-variant-numeric:tabular-nums}
+  </style>
+</head>
+<body>
+  <main class="stage" id="stage"><div class="canvas" id="canvas"><iframe id="slide" title="Slides player"></iframe></div></main>
+  <nav class="controls" id="controls" aria-label="翻页控制"><button id="prev" aria-label="上一页">‹</button><span class="count" id="count"></span><button id="next" aria-label="下一页">›</button></nav>
+  <script>
+    const title=${safeTitle}, pages=${safePages}; let index=0;
+    const stage=document.getElementById('stage'), canvas=document.getElementById('canvas'), frame=document.getElementById('slide'), count=document.getElementById('count'), prev=document.getElementById('prev'), next=document.getElementById('next');
+    document.title=title+' · Play';
+    function layout(){const scale=Math.min(innerWidth/1024,innerHeight/576);canvas.style.left=(innerWidth-1024*scale)/2+'px';canvas.style.top=(innerHeight-576*scale)/2+'px';canvas.style.transform='scale('+scale+')'}
+    function show(value){index=Math.max(0,Math.min(pages.length-1,value));frame.src=pages[index];count.textContent=(index+1)+' / '+pages.length;prev.disabled=index===0;next.disabled=index===pages.length-1}
+    function go(delta){show(index+delta)}
+    function isInteractiveClick(event){const target=event.target;return !!target?.closest?.('a[href],button,input,select,textarea,summary,video,audio,canvas,[contenteditable="true"],[onclick],[role="button"],[role="link"],[role="menuitem"],[role="tab"]')}
+    function handleKey(event){if(event.key==='ArrowLeft'){event.preventDefault();go(-1)}else if(event.key==='ArrowRight'||event.key===' '){event.preventDefault();go(1)}}
+    function bindSlideEvents(){try{const doc=frame.contentDocument;if(!doc)return;doc.addEventListener('click',event=>{if(!isInteractiveClick(event))go(1)});doc.addEventListener('keydown',handleKey)}catch(_error){}}
+    frame.addEventListener('load',bindSlideEvents);
+    stage.addEventListener('click',()=>go(1));
+    document.getElementById('controls').addEventListener('click',event=>event.stopPropagation());
+    prev.onclick=()=>go(-1);next.onclick=()=>go(1);
+    addEventListener('keydown',handleKey);addEventListener('resize',layout);
+    layout();
+    show(0);
+  </script>
+</body>
+</html>`
 }
 
 function downloadDataUrl(dataUrl, fileName) {
@@ -1768,14 +1898,25 @@ async function downloadCowartImageShape(editor, imageShape) {
   })
 }
 
-async function downloadCowartHtmlDraft(editor, draftShapeId) {
+async function exportCowartHtmlDraft(editor, draftShapeId, format) {
   const shape = editor.getShape(draftShapeId)
+  if (format === 'html') {
+    const htmlContent = await readCowartHtmlDraftContent(shape)
+    const fileName = htmlDraftExportFileName(shape, 'html')
+    const dataUrl = textDataUrl(htmlContent, 'text/html')
+    if (hasCowartWidgetBridge()) {
+      return downloadCowartFile({ dataUrl, fileName, mimeType: 'text/html' })
+    }
+    downloadDataUrl(dataUrl, fileName)
+    return { fileName }
+  }
+
   const bounds = new Box(0, 0, Number(shape?.props?.w) || 1, Number(shape?.props?.h) || 1)
   const exportResult = await renderCowartHtmlDraftCanvas(
     shape,
     getAnnotationEditExportPixelRatio(bounds)
   )
-  const fileName = htmlDraftDownloadFileName(shape)
+  const fileName = htmlDraftExportFileName(shape, 'png')
   if (hasCowartWidgetBridge()) {
     return downloadCowartFile({
       dataUrl: exportResult.url,
@@ -1786,6 +1927,81 @@ async function downloadCowartHtmlDraft(editor, draftShapeId) {
 
   downloadDataUrl(exportResult.url, fileName)
   return { fileName }
+}
+
+async function exportCowartSlides(editor, slidesShapeId, format) {
+  if (!hasCowartWidgetBridge()) {
+    throw new Error('导出 Slides 文件夹需要在 Codex Cowart 小组件中使用。')
+  }
+
+  const slidesShape = editor.getShape(slidesShapeId)
+  if (!isAiSlidesShape(slidesShape)) throw new Error('请选择一个 AI Slides。')
+  const items = getAiSlidesItems(editor, slidesShapeId)
+  if (!items.length) throw new Error('当前 AI Slides 还没有可导出的页面。')
+  let directoryName = cowartSlidesExportName(slidesShape)
+  const results = []
+
+  if (format === 'image') {
+    for (const [index, item] of items.entries()) {
+      let dataUrl
+      if (isCowartHtmlDraftEmbedShape(item)) {
+        const bounds = new Box(0, 0, Number(item.props?.w) || 1, Number(item.props?.h) || 1)
+        dataUrl = (await renderCowartHtmlDraftCanvas(item, getAnnotationEditExportPixelRatio(bounds))).url
+      } else {
+        const exportResult = await editor.toImageDataUrl([item.id], {
+          background: true,
+          format: 'png',
+          padding: 0,
+          pixelRatio: 1
+        })
+        dataUrl = exportResult.url
+      }
+      const result = await downloadCowartFile({
+        dataUrl,
+        directoryName,
+        fileName: `page-${String(index + 1).padStart(2, '0')}.png`,
+        mimeType: 'image/png',
+        overwrite: true,
+        uniqueDirectory: index === 0
+      })
+      if (index === 0 && result.directoryName) directoryName = result.directoryName
+      results.push(result)
+    }
+    return { directoryName, filePath: results[0]?.directoryPath, results }
+  }
+
+  const pageFiles = []
+  for (const [index, item] of items.entries()) {
+    const fileName = `page-${String(index + 1).padStart(2, '0')}.html`
+    let htmlContent
+    if (isCowartHtmlDraftEmbedShape(item)) {
+      htmlContent = await readCowartHtmlDraftContent(item)
+    } else {
+      const imageDataUrl = await readCowartImageDataUrl(editor, item)
+      htmlContent = cowartImageSlideHtml(imageDataUrl, `${directoryName} · ${index + 1}`)
+    }
+    pageFiles.push(`pages/${fileName}`)
+    const result = await downloadCowartFile({
+      dataUrl: textDataUrl(htmlContent, 'text/html'),
+      directoryName,
+      subdirectory: 'pages',
+      fileName,
+      mimeType: 'text/html',
+      overwrite: true,
+      uniqueDirectory: index === 0
+    })
+    if (index === 0 && result.directoryName) directoryName = result.directoryName
+    results.push(result)
+  }
+
+  results.push(await downloadCowartFile({
+    dataUrl: textDataUrl(cowartSlidesPlayerHtml(directoryName, pageFiles), 'text/html'),
+    directoryName,
+    fileName: 'Play.html',
+    mimeType: 'text/html',
+    overwrite: true
+  }))
+  return { directoryName, filePath: results.at(-1)?.directoryPath, results }
 }
 
 async function exportCowartHtmlDraftAnnotationScreenshot(editor, draftShapeId) {
@@ -4537,6 +4753,109 @@ function CowartSelectionToolbar() {
   return <CowartImageToolbar />
 }
 
+function CowartExportMenu({ disabled = false, onExportHtml, onExportImage, targetKey }) {
+  const editor = useEditor()
+  const menuRef = useRef(null)
+  const [isOpen, setIsOpen] = useState(false)
+  const [status, setStatus] = useState('idle')
+
+  useEffect(() => {
+    setIsOpen(false)
+    setStatus('idle')
+  }, [targetKey])
+
+  useEffect(() => {
+    if (!isOpen) return undefined
+    function handlePointerDown(event) {
+      if (!menuRef.current?.contains(event.target)) setIsOpen(false)
+    }
+    function handleKeyDown(event) {
+      if (event.key === 'Escape') setIsOpen(false)
+    }
+    const doc = editor.getContainerDocument()
+    doc.addEventListener('pointerdown', handlePointerDown, true)
+    doc.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      doc.removeEventListener('pointerdown', handlePointerDown, true)
+      doc.removeEventListener('keydown', handleKeyDown, true)
+    }
+  }, [editor, isOpen])
+
+  useEffect(() => {
+    if (status === 'idle' || status === 'sending') return undefined
+    const timer = window.setTimeout(() => setStatus('idle'), ANNOTATION_EDIT_STATUS_RESET_MS)
+    return () => window.clearTimeout(timer)
+  }, [status])
+
+  async function handleExport(exporter) {
+    if (disabled || status === 'sending') return
+    setIsOpen(false)
+    setStatus('sending')
+    try {
+      await exporter()
+      setStatus('sent')
+    } catch (error) {
+      console.error(error)
+      setStatus('error')
+    }
+  }
+
+  const title = status === 'sending'
+    ? '正在导出'
+    : status === 'sent'
+      ? '导出完成'
+      : status === 'error'
+        ? '导出失败，请重试'
+        : COWART_EXPORT_LABEL
+
+  return (
+    <div className="cowart-export-menu" ref={menuRef}>
+      <TldrawUiToolbarButton
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+        aria-label={title}
+        className="cowart-export-trigger"
+        data-status={status}
+        data-testid={`tool.cowart-export-${targetKey}`}
+        disabled={disabled || status === 'sending'}
+        onClick={() => setIsOpen((open) => !open)}
+        title={title}
+        type="icon"
+      >
+        {status === 'sent' ? (
+          <Check aria-hidden="true" size={16} strokeWidth={2.2} />
+        ) : (
+          <Download aria-hidden="true" size={16} strokeWidth={2} />
+        )}
+        <span className="cowart-slides-toolbar-label">{COWART_EXPORT_LABEL}</span>
+        <ChevronDown aria-hidden="true" className="cowart-export-chevron" size={13} strokeWidth={2} />
+      </TldrawUiToolbarButton>
+      {isOpen && (
+        <div aria-label="导出格式" className="cowart-ai-slides-page-count-popover cowart-export-popover" role="menu">
+          <button
+            className="cowart-ai-slides-page-count-option"
+            onClick={() => handleExport(onExportImage)}
+            role="menuitem"
+            type="button"
+          >
+            <ImageIcon aria-hidden="true" className="is-visible" size={14} strokeWidth={2} />
+            <span>{COWART_EXPORT_IMAGE_LABEL}</span>
+          </button>
+          <button
+            className="cowart-ai-slides-page-count-option"
+            onClick={() => handleExport(onExportHtml)}
+            role="menuitem"
+            type="button"
+          >
+            <FileCode aria-hidden="true" className="is-visible" size={14} strokeWidth={2} />
+            <span>{COWART_EXPORT_HTML_LABEL}</span>
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CowartSlidesToolbar({ slidesShapeId }) {
   const editor = useEditor()
   const showToolbar = useValue(
@@ -4571,6 +4890,12 @@ function CowartSlidesToolbar({ slidesShapeId }) {
       getSelectionBounds={getSelectionBounds}
       label="AI Slides 工具栏"
     >
+      <CowartExportMenu
+        disabled={!hasContent}
+        onExportHtml={() => exportCowartSlides(editor, slidesShapeId, 'html')}
+        onExportImage={() => exportCowartSlides(editor, slidesShapeId, 'image')}
+        targetKey={`slides-${slidesShapeId}`}
+      />
       <TldrawUiToolbarButton
         aria-label={AI_SLIDES_PRESENT_LABEL}
         className="cowart-slides-present-button"
@@ -4671,11 +4996,10 @@ function CowartHtmlDraftToolbar({ draftShapeId }) {
       label="AI HTML 工具栏"
     >
       {!isDomEditing && (
-        <CowartHtmlDraftToolbarButton
-          action="download"
-          draftShapeId={draftShapeId}
-          icon="download"
-          label={HTML_DRAFT_DOWNLOAD_LABEL}
+        <CowartExportMenu
+          onExportHtml={() => exportCowartHtmlDraft(editor, draftShapeId, 'html')}
+          onExportImage={() => exportCowartHtmlDraft(editor, draftShapeId, 'image')}
+          targetKey={`html-${draftShapeId}`}
         />
       )}
       <CowartHtmlDraftDomEditButton draftShapeId={draftShapeId} isEditing={isDomEditing} />
@@ -4783,11 +5107,7 @@ function CowartHtmlDraftToolbarButton({
 
     setStatus('sending')
     try {
-      if (action === 'download') {
-        await downloadCowartHtmlDraft(editor, draftShapeId)
-      } else {
-        await sendHtmlDraftAnnotationRequest(editor, draftShapeId, action)
-      }
+      await sendHtmlDraftAnnotationRequest(editor, draftShapeId, action)
       setStatus('sent')
     } catch (error) {
       console.error(error)

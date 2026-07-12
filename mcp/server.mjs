@@ -99,6 +99,14 @@ function sanitizeFileName(name, fallbackName = "image.png") {
   return `${baseName || "image"}${extension}`;
 }
 
+function sanitizeDirectoryName(name, fallbackName = "Cowart Export") {
+  return basename(String(name || fallbackName))
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, "-")
+    .replace(/[. ]+$/g, "")
+    .trim()
+    .slice(0, 120) || fallbackName;
+}
+
 function sanitizeHtmlFileName(name, fallbackName = "draft.html") {
   const safeName = sanitizeFileName(name, fallbackName);
   return /\.html?$/i.test(safeName) ? safeName : `${safeName.replace(/\.[^.]+$/, "")}.html`;
@@ -163,6 +171,25 @@ async function uniqueFilePath(dir, requestedName) {
       counter += 1;
     } catch (error) {
       if (error?.code === "ENOENT") return { fileName: candidate, filePath: candidatePath };
+      throw error;
+    }
+  }
+}
+
+async function uniqueDirectoryPath(dir, requestedName) {
+  const safeName = sanitizeDirectoryName(requestedName);
+  let candidate = safeName;
+  let counter = 2;
+  while (true) {
+    const candidatePath = join(dir, candidate);
+    try {
+      await stat(candidatePath);
+      candidate = `${safeName}-${counter}`;
+      counter += 1;
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        return { directoryName: candidate, directoryPath: candidatePath };
+      }
       throw error;
     }
   }
@@ -821,14 +848,35 @@ async function downloadCowartFile(args = {}) {
     nonEmptyString(args.fileName) || sourceFileName,
     `cowart-download-${Date.now()}.png`,
   );
-  await mkdir(downloadsDir, { recursive: true });
-  const { fileName, filePath } = await uniqueFilePath(downloadsDir, requestedName);
+  const requestedDirectoryName = nonEmptyString(args.directoryName);
+  const requestedSubdirectory = nonEmptyString(args.subdirectory);
+  let directoryName = requestedDirectoryName
+    ? sanitizeDirectoryName(requestedDirectoryName)
+    : null;
+  let exportRoot = directoryName ? join(downloadsDir, directoryName) : downloadsDir;
+  if (directoryName && args.uniqueDirectory === true) {
+    const uniqueDirectory = await uniqueDirectoryPath(downloadsDir, directoryName);
+    directoryName = uniqueDirectory.directoryName;
+    exportRoot = uniqueDirectory.directoryPath;
+  }
+  const targetDir = requestedSubdirectory
+    ? join(exportRoot, sanitizeDirectoryName(requestedSubdirectory, "pages"))
+    : exportRoot;
+  if (!isSafeChildPath(downloadsDir, targetDir) && targetDir !== downloadsDir) {
+    throw new Error("Invalid Cowart download directory.");
+  }
+  await mkdir(targetDir, { recursive: true });
+  const { fileName, filePath } = args.overwrite === true
+    ? { fileName: requestedName, filePath: join(targetDir, requestedName) }
+    : await uniqueFilePath(targetDir, requestedName);
   await writeFile(filePath, buffer);
 
   return {
     ok: true,
     fileName,
     filePath,
+    directoryName,
+    directoryPath: exportRoot,
     mimeType,
     fileSize: buffer.length,
   };
@@ -1094,7 +1142,7 @@ function registerCowartImageTools(mcpServer) {
     {
       title: "Download Cowart File",
       description:
-        "Save an image or rendered HTML draft requested by the Cowart widget into the user's system Downloads folder.",
+        "Save an image, HTML draft, or exported Slides package file requested by the Cowart widget into the user's system Downloads folder.",
       inputSchema: {
         ...projectArgsSchema,
         assetUrl: z.string().trim().optional(),
@@ -1102,6 +1150,10 @@ function registerCowartImageTools(mcpServer) {
         dataUrl: z.string().optional(),
         dataBase64: z.string().optional(),
         mimeType: z.string().trim().optional(),
+        directoryName: z.string().trim().optional(),
+        subdirectory: z.string().trim().optional(),
+        overwrite: z.boolean().optional(),
+        uniqueDirectory: z.boolean().optional(),
       },
       annotations: {
         readOnlyHint: false,
