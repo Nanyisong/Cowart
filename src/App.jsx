@@ -60,7 +60,7 @@ import {
 import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite'
 import { AllSelection } from '@tiptap/pm/state'
 import html2canvas from 'html2canvas'
-import { Check, ChevronDown, ChevronLeft, ChevronRight, Play, X } from 'lucide-react'
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Download, FileCode, Image, Play, X } from 'lucide-react'
 import 'tldraw/tldraw.css'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import aiHtmlToolIconRaw from './assets/ai-html.svg?raw'
@@ -96,6 +96,9 @@ const AI_DRAFT_HOLDER_LABEL = 'AI HTML'
 const AI_SLIDES_TOOL_ID = 'ai-slides'
 const AI_SLIDES_LABEL = 'AI Slides'
 const AI_SLIDES_PRESENT_LABEL = '演示 Slides'
+const COWART_EXPORT_LABEL = '导出'
+const COWART_EXPORT_IMAGE_LABEL = '导出为图片'
+const COWART_EXPORT_HTML_LABEL = '导出为 HTML'
 const AI_SLIDES_GAP = 32
 const COWART_OPEN_SLIDES_EVENT = 'cowart:open-slides'
 const AI_IMAGE_HOLDER_DEFAULT_W = 512
@@ -164,7 +167,6 @@ const ANNOTATION_EDIT_NEAR_MARGIN_MAX = 720
 const ANNOTATION_EDIT_RELATED_TEXT_MARGIN = 120
 const ANNOTATION_EDIT_STATUS_RESET_MS = 2200
 const ANNOTATION_EDIT_COLORS = new Set(['red', 'yellow', 'orange'])
-const HTML_DRAFT_DOWNLOAD_LABEL = '下载原图'
 const HTML_DRAFT_DOM_EDIT_LABEL = '编辑文本'
 const HTML_DRAFT_DOM_EDIT_DONE_LABEL = '完成编辑'
 const HTML_DRAFT_ANNOTATION_EDIT_LABEL = '按标注修改'
@@ -194,6 +196,10 @@ const AI_IMAGE_GENERATION_PROMPT_PREFIX = [
   '[@cowart](plugin://cowart@personal) 生成图片',
   '',
   '请根据下面的 prompt 生成一张图片，并替换当前选中的 Cowart AI 图片框；最终画布里应留下普通图片形状，不保留 AI 图片框容器。',
+  '默认生成一张；如果用户在 prompt 中明确要求多张图片，则用户要求的数量优先于上面的单数措辞。',
+  '多张时必须分别生成对应数量的独立 bitmap，并作为多个普通图片形状从左到右平铺在画布上；第一张替换当前 AI 图片框，后续图片放在上一张图片右侧。',
+  '插入多张图片时，第一张按默认流程替换 AI 图片框；之后每次使用上一张插入结果返回的 shapeId 作为 anchorShapeId，并设置 replaceAiImageHolder: false、matchAnchor: false、placement: "right"。',
+  '不要把多张图片合成一张拼图、画册或带分页的单一产物。',
   '如果附带一张或多张参考图，请把参考图作为视觉参考；不要把参考图文件名或任何界面元素画进最终图片。',
   '不需要选择生图模型，使用 Codex 当前可用的图片生成能力。'
 ].join('\n')
@@ -201,6 +207,9 @@ const AI_DRAFT_GENERATION_PROMPT_PREFIX = [
   '[@cowart](plugin://cowart@personal) 生成 AI HTML',
   '',
   '请根据下面的 prompt 生成一个单文件 HTML 草稿，并把它嵌入当前选中的 Cowart AI HTML 框。',
+  '默认生成一个 HTML；如果用户在 prompt 中明确要求多个 HTML、多个方案或多张页面，则用户要求的数量优先于上面的单数措辞。',
+  '多个 HTML 必须分别生成为对应数量的完整、独立、可运行的单文件 HTML，并作为多个 HTML embed 从左到右平铺在画布上；第一个替换当前 AI HTML 框，后续 HTML 放在上一个 HTML 右侧。',
+  '不要在一个 AI HTML 里制作多页、分页、选项卡、轮播或幻灯片来代替多个独立 HTML；只有用户明确要求 AI Slides 时才使用多页 Slides 语义。',
   '这不是图片生成任务：不要生成 bitmap，不要调用 insert_cowart_image。',
   '请生成完整可运行的 HTML 文档，CSS 和 JS 尽量内联，适合直接放进 iframe 预览。',
   '完成后调用 Cowart MCP 工具 insert_cowart_html_draft，把 htmlContent 写入当前 page 的 canvas/pages/<page-id>/assets/，并替换对应 AI HTML 框为 HTML embed。'
@@ -2268,6 +2277,8 @@ function buildAiDraftGenerationPrompt({ holderShape, userPrompt, references, ref
     '- Pass the final HTML document as htmlContent.',
     '- Use a short .html fileName that describes the draft.',
     '- Leave replaceDraftHolder unset or true so the AI HTML frame becomes the embedded HTML preview.',
+    '- If the prompt requests multiple HTML outputs, call insert_cowart_html_draft once per HTML. Use the holder id above only for the first call.',
+    '- For each additional HTML, use the previous call result shapeId as draftShapeId and set updateExistingDraft: false, replaceDraftHolder: false, matchAnchor: false, and placement: "right" so the independent HTML embeds are laid out horizontally.',
     '',
     'Prompt:',
     userPrompt.trim()
@@ -4202,7 +4213,7 @@ function CowartAiSlidesGenerationPanel() {
           }}
           onKeyDown={handlePromptKeyDown}
           onPaste={handlePromptPaste}
-          placeholder="描述你想生成的 Slides，或是图片或者 HTML 放进来..."
+          placeholder="描述你想生成的 Slides，或是将图片和 HTML 放进 Slides..."
           rows={3}
           value={promptValue}
         />
