@@ -60,10 +60,12 @@ import {
 import { getAssetUrlsByImport } from '@tldraw/assets/imports.vite'
 import { AllSelection } from '@tiptap/pm/state'
 import html2canvas from 'html2canvas'
+import { ChevronLeft, ChevronRight, Play, X } from 'lucide-react'
 import 'tldraw/tldraw.css'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import aiHtmlToolIconRaw from './assets/ai-html.svg?raw'
 import aiImageToolIconRaw from './assets/ai-image.svg?raw'
+import aiSlidesToolIconRaw from './assets/ai-slides.svg?raw'
 import annotationToolIconRaw from './assets/tool-comment.svg?raw'
 import {
   IS_COWART_WIDGET_BUILD,
@@ -90,9 +92,19 @@ const GLOBAL_ASSETS_ROUTE = '/assets/'
 const AI_IMAGE_TOOL_ID = 'ai-image'
 const AI_IMAGE_HOLDER_LABEL = 'AI 图片'
 const AI_DRAFT_TOOL_ID = 'ai-draft'
-const AI_DRAFT_HOLDER_LABEL = 'AI Html'
+const AI_DRAFT_HOLDER_LABEL = 'AI HTML'
+const AI_SLIDES_TOOL_ID = 'ai-slides'
+const AI_SLIDES_LABEL = 'AI Slides'
+const AI_SLIDES_PRESENT_LABEL = '演示 Slides'
+const AI_SLIDES_DEFAULT_W = 1120
+const AI_SLIDES_DEFAULT_H = 360
+const AI_SLIDES_PADDING = 24
+const AI_SLIDES_GAP = 32
+const COWART_OPEN_SLIDES_EVENT = 'cowart:open-slides'
 const AI_IMAGE_HOLDER_DEFAULT_W = 512
 const AI_IMAGE_HOLDER_DEFAULT_H = 683
+const AI_DRAFT_HOLDER_DEFAULT_W = 1024
+const AI_DRAFT_HOLDER_DEFAULT_H = 576
 const AI_IMAGE_SIZE_MIN = 16
 const AI_IMAGE_SIZE_MAX = 8192
 const AI_IMAGE_GENERATION_PANEL_OFFSET = 14
@@ -136,7 +148,7 @@ const ANNOTATION_EDIT_PROMPT = [
   '- 保留原图和原标注不动，把新图放到原图旁边。'
 ].join('\n')
 const ANNOTATION_HTML_PROMPT = [
-  '[@cowart](plugin://cowart@personal) 按标注生成 AI Html',
+  '[@cowart](plugin://cowart@personal) 按标注生成 AI HTML',
   '',
   '请根据这张 Cowart 截图里的当前图片和周围标注，生成一个新的单文件 HTML 草稿：',
   '- 截图包含当前选中的图片，以及连到图片里或图片附近的标注箭头和标注文字。',
@@ -158,7 +170,7 @@ const HTML_DRAFT_DOM_EDIT_DONE_LABEL = '完成编辑'
 const HTML_DRAFT_ANNOTATION_EDIT_LABEL = '按标注修改'
 const HTML_DRAFT_ANNOTATION_IMAGE_LABEL = '按标注生图'
 const HTML_DRAFT_ANNOTATION_EDIT_PROMPT = [
-  '[@cowart](plugin://cowart@personal) 按标注修改 AI Html',
+  '[@cowart](plugin://cowart@personal) 按标注修改 AI HTML',
   '',
   '请根据这张 Cowart 截图里的标注修改当前选中的 HTML 草稿：',
   '- 截图包含当前 HTML 草稿，以及草稿周围的标注箭头和标注文字。',
@@ -186,12 +198,12 @@ const AI_IMAGE_GENERATION_PROMPT_PREFIX = [
   '不需要选择生图模型，使用 Codex 当前可用的图片生成能力。'
 ].join('\n')
 const AI_DRAFT_GENERATION_PROMPT_PREFIX = [
-  '[@cowart](plugin://cowart@personal) 生成 AI Html',
+  '[@cowart](plugin://cowart@personal) 生成 AI HTML',
   '',
-  '请根据下面的 prompt 生成一个单文件 HTML 草稿，并把它嵌入当前选中的 Cowart AI Html 框。',
+  '请根据下面的 prompt 生成一个单文件 HTML 草稿，并把它嵌入当前选中的 Cowart AI HTML 框。',
   '这不是图片生成任务：不要生成 bitmap，不要调用 insert_cowart_image。',
   '请生成完整可运行的 HTML 文档，CSS 和 JS 尽量内联，适合直接放进 iframe 预览。',
-  '完成后调用 Cowart MCP 工具 insert_cowart_html_draft，把 htmlContent 写入当前 page 的 canvas/pages/<page-id>/assets/，并替换对应 AI Html 框为 HTML embed。'
+  '完成后调用 Cowart MCP 工具 insert_cowart_html_draft，把 htmlContent 写入当前 page 的 canvas/pages/<page-id>/assets/，并替换对应 AI HTML 框为 HTML embed。'
 ].join('\n')
 const aiImageToolIconSvg = aiImageToolIconRaw.replaceAll('black', 'currentColor')
 const aiImageToolIcon = (
@@ -207,6 +219,14 @@ const aiHtmlToolIcon = (
     aria-hidden="true"
     className="cowart-ai-frame-tool-icon"
     dangerouslySetInnerHTML={{ __html: aiHtmlToolIconSvg }}
+  />
+)
+const aiSlidesToolIconSvg = aiSlidesToolIconRaw.replaceAll('black', 'currentColor')
+const aiSlidesToolIcon = (
+  <div
+    aria-hidden="true"
+    className="cowart-ai-frame-tool-icon"
+    dangerouslySetInnerHTML={{ __html: aiSlidesToolIconSvg }}
   />
 )
 const annotationToolIconSvg = annotationToolIconRaw.replaceAll('black', 'currentColor')
@@ -225,6 +245,8 @@ const cowartAssetObjectUrlCache = new Map()
 const cowartAssetSourceKeys = new Map()
 const cowartHtmlDraftIframes = new Map()
 const cowartHtmlDraftDomEditSessions = new Map()
+const cowartPendingSlidesPastes = new WeakMap()
+const cowartCopiedContent = new WeakMap()
 
 const cowartTldrawAssetStore = {
   upload: async (_asset, file) => ({ src: await readFileAsDataUrl(file) }),
@@ -429,6 +451,16 @@ function getAiDraftHolderMeta() {
   }
 }
 
+function getAiSlidesMeta() {
+  return {
+    cowartAiSlides: true,
+    cowartAiSlidesVersion: 1,
+    cowartAiSlidesFlow: 'horizontal',
+    cowartAiSlidesGap: AI_SLIDES_GAP,
+    cowartAiSlidesPadding: AI_SLIDES_PADDING
+  }
+}
+
 function isAiImageHolderShape(shape) {
   return shape?.type === 'frame' && shape.meta?.cowartAiImageHolder === true
 }
@@ -437,8 +469,16 @@ function isAiDraftHolderShape(shape) {
   return shape?.type === 'frame' && shape.meta?.cowartAiDraftHolder === true
 }
 
+function isAiSlidesShape(shape) {
+  return shape?.type === 'frame' && shape.meta?.cowartAiSlides === true
+}
+
 function isCowartAiHolderShape(shape) {
   return isAiImageHolderShape(shape) || isAiDraftHolderShape(shape)
+}
+
+function isAiSlidesItemShape(shape) {
+  return isImageShape(shape) || isCowartHtmlDraftEmbedShape(shape)
 }
 
 function isCowartHtmlDraftEmbedShape(shape) {
@@ -572,8 +612,8 @@ function createAiDraftHolderShape(editor, id, shapeOverrides = {}) {
       ...meta
     },
     props: {
-      w: AI_IMAGE_HOLDER_DEFAULT_W * scale,
-      h: AI_IMAGE_HOLDER_DEFAULT_H * scale,
+      w: AI_DRAFT_HOLDER_DEFAULT_W * scale,
+      h: AI_DRAFT_HOLDER_DEFAULT_H * scale,
       name: AI_DRAFT_HOLDER_LABEL,
       color: 'blue',
       ...frameProps
@@ -583,8 +623,8 @@ function createAiDraftHolderShape(editor, id, shapeOverrides = {}) {
 
 function createAiDraftHolderAtViewportCenter(editor) {
   const scale = editor.getResizeScaleFactor()
-  const w = AI_IMAGE_HOLDER_DEFAULT_W * scale
-  const h = AI_IMAGE_HOLDER_DEFAULT_H * scale
+  const w = AI_DRAFT_HOLDER_DEFAULT_W * scale
+  const h = AI_DRAFT_HOLDER_DEFAULT_H * scale
   const center = editor.getViewportPageBounds().center
   const id = createShapeId()
 
@@ -595,6 +635,228 @@ function createAiDraftHolderAtViewportCenter(editor) {
   })
   editor.select(id)
   editor.setCurrentTool('select.idle')
+}
+
+function createAiSlidesShape(editor, id, shapeOverrides = {}) {
+  const scale = editor.getResizeScaleFactor()
+  const { meta, props, ...shapeRecordOverrides } = shapeOverrides
+  const { scale: _scale, ...frameProps } = props ?? {}
+
+  return editor.createShape({
+    ...shapeRecordOverrides,
+    id,
+    type: 'frame',
+    meta: {
+      ...getAiSlidesMeta(),
+      ...meta
+    },
+    props: {
+      w: AI_SLIDES_DEFAULT_W * scale,
+      h: AI_SLIDES_DEFAULT_H * scale,
+      name: AI_SLIDES_LABEL,
+      color: 'blue',
+      ...frameProps
+    }
+  })
+}
+
+function createAiSlidesAtViewportCenter(editor) {
+  const scale = editor.getResizeScaleFactor()
+  const w = AI_SLIDES_DEFAULT_W * scale
+  const h = AI_SLIDES_DEFAULT_H * scale
+  const center = editor.getViewportPageBounds().center
+  const id = createShapeId()
+
+  createAiSlidesShape(editor, id, {
+    x: center.x - w / 2,
+    y: center.y - h / 2,
+    props: { w, h }
+  })
+  editor.select(id)
+  editor.setCurrentTool('select.idle')
+}
+
+function getAiSlidesItems(editor, slidesShapeId) {
+  return editor
+    .getSortedChildIdsForParent(slidesShapeId)
+    .map((shapeId) => editor.getShape(shapeId))
+    .filter(isAiSlidesItemShape)
+    .sort((a, b) => {
+      const aCenter = Number(a.x) + Number(a.props?.w || 0) / 2
+      const bCenter = Number(b.x) + Number(b.props?.w || 0) / 2
+      return aCenter - bCenter
+    })
+}
+
+function layoutAiSlides(editor, slidesShapeId) {
+  const slidesShape = editor.getShape(slidesShapeId)
+  if (!isAiSlidesShape(slidesShape)) return false
+
+  const items = getAiSlidesItems(editor, slidesShapeId)
+  if (!items.length) return false
+
+  const padding = Number(slidesShape.meta?.cowartAiSlidesPadding) || AI_SLIDES_PADDING
+  const gap = Number(slidesShape.meta?.cowartAiSlidesGap) || AI_SLIDES_GAP
+  let cursorX = padding
+  let maxHeight = 0
+  const updates = []
+
+  for (const item of items) {
+    const width = Math.max(1, Number(item.props?.w) || 1)
+    const height = Math.max(1, Number(item.props?.h) || 1)
+    maxHeight = Math.max(maxHeight, height)
+    if (Math.abs(item.x - cursorX) > 0.01 || Math.abs(item.y - padding) > 0.01 || item.rotation !== 0) {
+      updates.push({ id: item.id, type: item.type, x: cursorX, y: padding, rotation: 0 })
+    }
+    cursorX += width + gap
+  }
+
+  const nextWidth = Math.max(AI_SLIDES_DEFAULT_W, cursorX - gap + padding)
+  const nextHeight = Math.max(AI_SLIDES_DEFAULT_H, maxHeight + padding * 2)
+  if (
+    Math.abs(Number(slidesShape.props.w) - nextWidth) > 0.01 ||
+    Math.abs(Number(slidesShape.props.h) - nextHeight) > 0.01
+  ) {
+    updates.push({
+      id: slidesShape.id,
+      type: 'frame',
+      props: { w: nextWidth, h: nextHeight }
+    })
+  }
+
+  if (!updates.length) return false
+  editor.updateShapes(updates)
+  return true
+}
+
+function layoutAllAiSlides(editor) {
+  for (const shape of editor.getCurrentPageShapes()) {
+    if (isAiSlidesShape(shape)) layoutAiSlides(editor, shape.id)
+  }
+}
+
+function normalizeAiDraftHolderLabels(editor) {
+  const updates = editor
+    .getCurrentPageShapes()
+    .filter((shape) => isAiDraftHolderShape(shape) && shape.props?.name !== AI_DRAFT_HOLDER_LABEL)
+    .map((shape) => ({
+      id: shape.id,
+      type: shape.type,
+      props: { name: AI_DRAFT_HOLDER_LABEL }
+    }))
+
+  if (updates.length) editor.updateShapes(updates)
+}
+
+function copySelectedCowartContent(editor, event) {
+  if (!event.clipboardData || editor.getEditingShapeId() !== null) return false
+
+  const content = editor.getContentFromCurrentPage(editor.getSelectedShapeIds())
+  if (!content) return false
+
+  const copiedContent = structuredClone(content)
+  cowartCopiedContent.set(editor, copiedContent)
+
+  const clipboardPayload = JSON.stringify({
+    type: 'application/tldraw',
+    kind: 'content',
+    version: 2,
+    data: copiedContent
+  })
+  event.clipboardData.setData('text/html', `<div data-tldraw>${clipboardPayload}</div>`)
+  event.clipboardData.setData('text/plain', ' ')
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  return true
+}
+
+function rememberAiSlidesPasteTarget(editor) {
+  const slidesShape = editor.getOnlySelectedShape()
+  if (!isAiSlidesShape(slidesShape)) {
+    cowartPendingSlidesPastes.delete(editor)
+    return
+  }
+
+  cowartPendingSlidesPastes.set(editor, {
+    slidesShapeId: slidesShape.id,
+    existingShapeIds: new Set(editor.getCurrentPageShapeIds()),
+    expiresAt: Date.now() + 5000
+  })
+}
+
+function getPendingAiSlidesPaste(editor) {
+  const pendingPaste = cowartPendingSlidesPastes.get(editor)
+  if (!pendingPaste) return null
+  if (pendingPaste.expiresAt >= Date.now()) return pendingPaste
+  cowartPendingSlidesPastes.delete(editor)
+  return null
+}
+
+function preparePastedItemForAiSlides(editor, shape, source) {
+  if (source !== 'user' || !isAiSlidesItemShape(shape)) return shape
+
+  const pendingPaste = getPendingAiSlidesPaste(editor)
+  if (!pendingPaste || pendingPaste.existingShapeIds.has(shape.id)) return shape
+
+  const slidesShape = editor.getShape(pendingPaste.slidesShapeId)
+  if (!isAiSlidesShape(slidesShape)) {
+    cowartPendingSlidesPastes.delete(editor)
+    return shape
+  }
+
+  return {
+    ...shape,
+    parentId: slidesShape.id
+  }
+}
+
+function movePastedItemsIntoAiSlides(editor) {
+  const pendingPaste = getPendingAiSlidesPaste(editor)
+  if (!pendingPaste) return false
+
+  const slidesShape = editor.getShape(pendingPaste.slidesShapeId)
+  if (!isAiSlidesShape(slidesShape)) {
+    cowartPendingSlidesPastes.delete(editor)
+    return false
+  }
+
+  const pastedItems = editor.getSelectedShapes().filter((shape) =>
+    isAiSlidesItemShape(shape) &&
+    !pendingPaste.existingShapeIds.has(shape.id)
+  )
+  if (!pastedItems.length) return false
+
+  editor.run(
+    () => {
+      const itemsToReparent = pastedItems.filter((shape) => shape.parentId !== slidesShape.id)
+      if (itemsToReparent.length) {
+        editor.reparentShapes(itemsToReparent.map((shape) => shape.id), slidesShape.id)
+      }
+      layoutAiSlides(editor, slidesShape.id)
+    },
+    { history: 'ignore' }
+  )
+  cowartPendingSlidesPastes.delete(editor)
+  return true
+}
+
+const cowartTldrawOptions = {
+  onBeforeCopyToClipboard({ editor, content }) {
+    cowartCopiedContent.set(editor, structuredClone(content))
+  },
+  onBeforePasteFromClipboard({ editor }) {
+    rememberAiSlidesPasteTarget(editor)
+  },
+  onClipboardPasteRaw({ editor }) {
+    const slidesShape = editor.getOnlySelectedShape()
+    const copiedContent = cowartCopiedContent.get(editor)
+    if (!isAiSlidesShape(slidesShape) || !copiedContent) return
+
+    rememberAiSlidesPasteTarget(editor)
+    editor.markHistoryStoppingPoint('paste')
+    editor.putContentOntoCurrentPage(structuredClone(copiedContent), { select: true })
+    return false
+  }
 }
 
 function startEditingAnnotationArrowLabel(editor, arrowId) {
@@ -823,7 +1085,7 @@ function collectHtmlDraftAnnotationShapeIds(editor, draftShapeId) {
     editor,
     draftShapeId,
     isCowartHtmlDraftEmbedShape,
-    '请选择一个已生成 HTML 的 AI Html。'
+    '请选择一个已生成 HTML 的 AI HTML。'
   )
 }
 
@@ -1361,7 +1623,7 @@ function getCowartHtmlDraftLocalPath(shape) {
 
 async function renderCowartHtmlDraftCanvas(shape, pixelRatio) {
   if (!isCowartHtmlDraftEmbedShape(shape)) {
-    throw new Error('请选择一个已生成 HTML 的 AI Html。')
+    throw new Error('请选择一个已生成 HTML 的 AI HTML。')
   }
 
   const iframeDocument = await waitForHtmlDraftDocument(shape.id)
@@ -1601,7 +1863,7 @@ async function sendHtmlDraftAnnotationRequest(editor, draftShapeId, mode) {
 
   const draftShape = editor.getShape(draftShapeId)
   if (!isCowartHtmlDraftEmbedShape(draftShape)) {
-    throw new Error('请选择一个已生成 HTML 的 AI Html。')
+    throw new Error('请选择一个已生成 HTML 的 AI HTML。')
   }
 
   const exportResult = await exportCowartHtmlDraftAnnotationScreenshot(editor, draftShapeId)
@@ -1748,7 +2010,7 @@ function buildAiDraftGenerationPrompt({ holderShape, userPrompt, references, ref
     `- Call insert_cowart_html_draft with draftShapeId: "${holderShape.id}".`,
     '- Pass the final HTML document as htmlContent.',
     '- Use a short .html fileName that describes the draft.',
-    '- Leave replaceDraftHolder unset or true so the AI Html frame becomes the embedded HTML preview.',
+    '- Leave replaceDraftHolder unset or true so the AI HTML frame becomes the embedded HTML preview.',
     '',
     'Prompt:',
     userPrompt.trim()
@@ -2274,11 +2536,13 @@ const cowartUiOverrides = {
     en: {
       'tool.ai-image': AI_IMAGE_HOLDER_LABEL,
       'tool.ai-draft': AI_DRAFT_HOLDER_LABEL,
+      'tool.ai-slides': AI_SLIDES_LABEL,
       'tool.cowart-annotation': ANNOTATION_TOOL_LABEL
     },
     'zh-cn': {
       'tool.ai-image': AI_IMAGE_HOLDER_LABEL,
       'tool.ai-draft': AI_DRAFT_HOLDER_LABEL,
+      'tool.ai-slides': AI_SLIDES_LABEL,
       'tool.cowart-annotation': ANNOTATION_TOOL_LABEL
     }
   },
@@ -2327,8 +2591,8 @@ const cowartUiOverrides = {
             createShape: (id) =>
               createAiDraftHolderShape(editor, id, {
                 props: {
-                  w: AI_IMAGE_HOLDER_DEFAULT_W * scale,
-                  h: AI_IMAGE_HOLDER_DEFAULT_H * scale
+                  w: AI_DRAFT_HOLDER_DEFAULT_W * scale,
+                  h: AI_DRAFT_HOLDER_DEFAULT_H * scale
                 }
               }),
             onDragEnd: (id) => editor.select(id)
@@ -2336,6 +2600,30 @@ const cowartUiOverrides = {
         },
         meta: {
           cowartTool: 'ai-draft-holder'
+        }
+      },
+      [AI_SLIDES_TOOL_ID]: {
+        id: AI_SLIDES_TOOL_ID,
+        label: 'tool.ai-slides',
+        icon: aiSlidesToolIcon,
+        onSelect() {
+          createAiSlidesAtViewportCenter(editor)
+        },
+        onDragStart(source, info) {
+          const scale = editor.getResizeScaleFactor()
+          onDragFromToolbarToCreateShape(editor, info, {
+            createShape: (id) =>
+              createAiSlidesShape(editor, id, {
+                props: {
+                  w: AI_SLIDES_DEFAULT_W * scale,
+                  h: AI_SLIDES_DEFAULT_H * scale
+                }
+              }),
+            onDragEnd: (id) => editor.select(id)
+          })
+        },
+        meta: {
+          cowartTool: 'ai-slides'
         }
       },
       [ANNOTATION_TOOL_ID]: {
@@ -2367,7 +2655,386 @@ function CowartCanvasOverlay() {
     <>
       <CowartAiImageGenerationPanel />
       <CowartAiDraftGenerationPanel />
+      <CowartSlidesPresentationOverlay />
     </>
+  )
+}
+
+function CowartSlidesMedia({ shape, title }) {
+  const editor = useEditor()
+  const [source, setSource] = useState(null)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let disposed = false
+    setSource(null)
+    setError(null)
+
+    async function loadSource() {
+      if (isImageShape(shape)) {
+        const asset = shape.props?.assetId ? editor.getAsset(shape.props.assetId) : null
+        const assetSource = asset?.props?.src
+        if (!asset || !assetSource) throw new Error('图片资源不可用')
+
+        if (assetSource.startsWith(PAGE_ASSETS_ROUTE) && hasCowartWidgetBridge()) {
+          const pageAsset = await readCowartPageAsset(assetSource)
+          return {
+            kind: 'image',
+            url: `data:${pageAsset.mimeType};base64,${pageAsset.dataBase64}`
+          }
+        }
+
+        if (assetSource.startsWith('data:') || /^https?:\/\//.test(assetSource)) {
+          return { kind: 'image', url: assetSource }
+        }
+
+        const resolvedUrl = await editor.resolveAssetUrl(asset.id, { shouldResolveToOriginal: true })
+        if (!resolvedUrl) throw new Error('图片资源无法解析')
+        return { kind: 'image', url: resolvedUrl }
+      }
+
+      if (isCowartHtmlDraftEmbedShape(shape)) {
+        const directHtmlUrl = isCowartHtmlDraftDataUrl(shape.props.url) ? shape.props.url : null
+        if (directHtmlUrl) return { kind: 'html-url', url: directHtmlUrl }
+
+        const assetUrl =
+          cowartHtmlDraftAssetUrlFromVirtualUrl(shape.meta?.cowartHtmlDraftAssetUrl) ||
+          cowartHtmlDraftAssetUrlFromVirtualUrl(shape.props.url)
+        if (!assetUrl) throw new Error('HTML 草稿资源不可用')
+
+        if (hasCowartWidgetBridge()) {
+          const pageAsset = await readCowartPageAsset(assetUrl)
+          const htmlContent = await blobFromBase64(pageAsset.dataBase64, pageAsset.mimeType).text()
+          return { kind: 'html', htmlContent }
+        }
+
+        const response = await window.fetch(assetUrl)
+        if (!response.ok) throw new Error(`HTML 草稿加载失败：${response.status}`)
+        return { kind: 'html', htmlContent: await response.text() }
+      }
+
+      throw new Error('不支持的 Slides 页面类型')
+    }
+
+    loadSource()
+      .then((nextSource) => {
+        if (!disposed) setSource(nextSource)
+      })
+      .catch((nextError) => {
+        if (!disposed) setError(nextError instanceof Error ? nextError.message : '页面加载失败')
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [editor, shape.id, shape.props?.assetId, shape.props?.url, shape.meta?.cowartHtmlDraftAssetUrl])
+
+  if (source?.kind === 'image') {
+    return <img alt={title} className="cowart-slides-media" draggable={false} src={source.url} />
+  }
+
+  if (source?.kind === 'html' || source?.kind === 'html-url') {
+    return (
+      <iframe
+        className="cowart-slides-media"
+        frameBorder="0"
+        sandbox="allow-forms allow-popups allow-same-origin allow-scripts"
+        src={source.kind === 'html-url' ? source.url : undefined}
+        srcDoc={source.kind === 'html' ? source.htmlContent : undefined}
+        tabIndex={-1}
+        title={title}
+      />
+    )
+  }
+
+  return <div className="cowart-slides-media-status">{error || 'Loading'}</div>
+}
+
+function CowartSlidesScaledMedia({ className = '', shape, title }) {
+  const containerRef = useRef(null)
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 })
+  const width = Math.max(1, Number(shape.props?.w) || 16)
+  const height = Math.max(1, Number(shape.props?.h) || 9)
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return undefined
+
+    function updateSize() {
+      const bounds = container.getBoundingClientRect()
+      setContainerSize((currentSize) => {
+        if (currentSize.width === bounds.width && currentSize.height === bounds.height) {
+          return currentSize
+        }
+        return { width: bounds.width, height: bounds.height }
+      })
+    }
+
+    updateSize()
+    const ResizeObserverClass = container.ownerDocument.defaultView?.ResizeObserver
+    if (!ResizeObserverClass) return undefined
+
+    const resizeObserver = new ResizeObserverClass(updateSize)
+    resizeObserver.observe(container)
+    return () => resizeObserver.disconnect()
+  }, [])
+
+  const scale = Math.min(containerSize.width / width, containerSize.height / height)
+  const scaledWidth = width * scale
+  const scaledHeight = height * scale
+
+  return (
+    <span className={`cowart-slides-media-viewport ${className}`.trim()} ref={containerRef}>
+      {scale > 0 && (
+        <span
+          className="cowart-slides-media-canvas"
+          style={{
+            height: `${height}px`,
+            left: `${(containerSize.width - scaledWidth) / 2}px`,
+            top: `${(containerSize.height - scaledHeight) / 2}px`,
+            transform: `scale(${scale})`,
+            width: `${width}px`
+          }}
+        >
+          <CowartSlidesMedia shape={shape} title={title} />
+        </span>
+      )}
+    </span>
+  )
+}
+
+function CowartSlidesPresentationOverlay() {
+  const editor = useEditor()
+  const overlayRef = useRef(null)
+  const [slidesShapeId, setSlidesShapeId] = useState(null)
+  const [index, setIndex] = useState(0)
+  const [isPresenting, setIsPresenting] = useState(false)
+
+  const slidesShape = useValue(
+    'cowart active slides presentation frame',
+    () => (slidesShapeId ? editor.getShape(slidesShapeId) : null),
+    [editor, slidesShapeId]
+  )
+  const slides = useValue(
+    'cowart active slides presentation items',
+    () => (slidesShapeId ? getAiSlidesItems(editor, slidesShapeId) : []),
+    [editor, slidesShapeId]
+  )
+  const currentSlide = slides[index] || null
+  const total = slides.length
+
+  useEffect(() => {
+    function handleOpen(event) {
+      const nextSlidesShapeId = event.detail?.slidesShapeId
+      if (!nextSlidesShapeId || !isAiSlidesShape(editor.getShape(nextSlidesShapeId))) return
+      layoutAiSlides(editor, nextSlidesShapeId)
+      setSlidesShapeId(nextSlidesShapeId)
+      setIndex(0)
+      setIsPresenting(false)
+    }
+
+    const doc = editor.getContainerDocument()
+    doc.addEventListener(COWART_OPEN_SLIDES_EVENT, handleOpen)
+    return () => doc.removeEventListener(COWART_OPEN_SLIDES_EVENT, handleOpen)
+  }, [editor])
+
+  useEffect(() => {
+    if (index < total) return
+    setIndex(Math.max(0, total - 1))
+  }, [index, total])
+
+  useEffect(() => {
+    function handleFullscreenChange() {
+      if (editor.getContainerDocument().fullscreenElement !== overlayRef.current) {
+        setIsPresenting(false)
+      }
+    }
+
+    const doc = editor.getContainerDocument()
+    doc.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => doc.removeEventListener('fullscreenchange', handleFullscreenChange)
+  }, [editor])
+
+  useEffect(() => {
+    if (!slidesShapeId) return undefined
+
+    const container = editor.getContainer()
+    container.classList.add('cowart-slides-mode')
+    return () => container.classList.remove('cowart-slides-mode')
+  }, [editor, slidesShapeId])
+
+  const go = useCallback(
+    (delta) => setIndex((value) => Math.max(0, Math.min(total - 1, value + delta))),
+    [total]
+  )
+
+  useEffect(() => {
+    if (!slidesShapeId) return undefined
+
+    function handleKeyDown(event) {
+      const target = event.target
+      if (target && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) return
+
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        if (isPresenting) {
+          exitPresentation()
+        } else {
+          closeViewer()
+        }
+        return
+      }
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault()
+        event.stopPropagation()
+        go(-1)
+      }
+      if (event.key === 'ArrowRight' || event.key === ' ') {
+        event.preventDefault()
+        event.stopPropagation()
+        go(1)
+      }
+    }
+
+    const doc = editor.getContainerDocument()
+    doc.addEventListener('keydown', handleKeyDown, { capture: true })
+    return () => doc.removeEventListener('keydown', handleKeyDown, { capture: true })
+  }, [editor, go, isPresenting, slidesShapeId])
+
+  async function exitPresentation() {
+    setIsPresenting(false)
+    const doc = editor.getContainerDocument()
+    if (doc.fullscreenElement === overlayRef.current) {
+      try {
+        await doc.exitFullscreen()
+      } catch (_error) {
+        // The browser may already be exiting fullscreen.
+      }
+    }
+  }
+
+  function closeViewer() {
+    setSlidesShapeId(null)
+    void exitPresentation()
+  }
+
+  async function playSlides() {
+    if (!currentSlide) return
+    setIsPresenting(true)
+    if (!editor.getContainerDocument().fullscreenElement) {
+      try {
+        await overlayRef.current?.requestFullscreen({ navigationUI: 'hide' })
+      } catch (_error) {
+        // Keep the clean in-widget presentation view if fullscreen is unavailable.
+      }
+    }
+  }
+
+  function handlePresentStageClick(event) {
+    if (event.target.closest('.cowart-slides-present-controls')) return
+    go(1)
+  }
+
+  if (!slidesShapeId || !isAiSlidesShape(slidesShape)) return null
+
+  const deckName = slidesShape.props?.name || AI_SLIDES_LABEL
+  return (
+    <section
+      ref={overlayRef}
+      aria-label="AI Slides 演示器"
+      className={`cowart-slides-viewer${isPresenting ? ' is-presenting' : ''}`}
+      onClick={stopEditorOverlayEvent}
+      onDoubleClick={stopEditorOverlayEvent}
+      onPointerDown={stopEditorOverlayEvent}
+    >
+      {isPresenting && currentSlide ? (
+        <div className="cowart-slides-present-stage" onClick={handlePresentStageClick}>
+          <div className="cowart-slides-present-slide">
+            <CowartSlidesScaledMedia
+              className="cowart-slides-present-media"
+              shape={currentSlide}
+              title={`第 ${index + 1} 页`}
+            />
+          </div>
+          <div className="cowart-slides-present-controls" onClick={stopEditorOverlayEvent}>
+            <button aria-label="上一页" disabled={index === 0} onClick={() => go(-1)} type="button">
+              <ChevronLeft aria-hidden="true" size={15} strokeWidth={2} />
+            </button>
+            <span>{index + 1} / {total}</span>
+            <button aria-label="下一页" disabled={index >= total - 1} onClick={() => go(1)} type="button">
+              <ChevronRight aria-hidden="true" size={15} strokeWidth={2} />
+            </button>
+            <button aria-label="退出播放" onClick={exitPresentation} type="button">
+              <X aria-hidden="true" size={15} strokeWidth={2} />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <header className="cowart-slides-viewer-header">
+            <div className="cowart-slides-deck-name">{deckName}</div>
+            <nav aria-label="翻页控制" className="cowart-slides-page-nav">
+              <button aria-label="上一页" disabled={index === 0 || !total} onClick={() => go(-1)} type="button">
+                <ChevronLeft aria-hidden="true" size={18} strokeWidth={2} />
+              </button>
+              <span>{total ? `${index + 1} / ${total}` : '0 / 0'}</span>
+              <button aria-label="下一页" disabled={index >= total - 1 || !total} onClick={() => go(1)} type="button">
+                <ChevronRight aria-hidden="true" size={18} strokeWidth={2} />
+              </button>
+            </nav>
+            <div className="cowart-slides-viewer-actions">
+              <button disabled={!currentSlide} onClick={playSlides} type="button">
+                <Play aria-hidden="true" size={15} strokeWidth={2} />
+                播放
+              </button>
+              <button aria-label="关闭演示页" onClick={closeViewer} type="button">
+                <X aria-hidden="true" size={18} strokeWidth={2} />
+              </button>
+            </div>
+          </header>
+          <div className="cowart-slides-viewer-body">
+            <aside aria-label="Slides 页面预览" className="cowart-slides-thumbnails">
+              {slides.map((slide, slideIndex) => {
+                const width = Math.max(1, Number(slide.props?.w) || 16)
+                const height = Math.max(1, Number(slide.props?.h) || 9)
+                return (
+                  <button
+                    aria-label={`跳转到第 ${slideIndex + 1} 页`}
+                    className={slideIndex === index ? 'is-active' : ''}
+                    key={slide.id}
+                    onClick={() => setIndex(slideIndex)}
+                    type="button"
+                  >
+                    <span>{slideIndex + 1}</span>
+                    <span className="cowart-slides-thumb-shell" style={{ aspectRatio: `${width} / ${height}` }}>
+                      <CowartSlidesScaledMedia
+                        className="cowart-slides-thumb-viewport"
+                        shape={slide}
+                        title={`第 ${slideIndex + 1} 页预览`}
+                      />
+                    </span>
+                  </button>
+                )
+              })}
+            </aside>
+            <main className="cowart-slides-main-stage">
+              {currentSlide ? (
+                <div className="cowart-slides-current-slide">
+                  <CowartSlidesScaledMedia
+                    className="cowart-slides-current-media"
+                    shape={currentSlide}
+                    title={`第 ${index + 1} 页`}
+                  />
+                </div>
+              ) : (
+                <div className="cowart-slides-empty">把图片或 HTML 草稿拖入 AI Slides 后即可演示。</div>
+              )}
+            </main>
+          </div>
+        </>
+      )}
+    </section>
   )
 }
 
@@ -2789,7 +3456,7 @@ function CowartAiDraftGenerationPanel() {
   return (
     <div className="cowart-ai-generation-overlay" aria-hidden={false}>
       <form
-        aria-label="AI Html 生成"
+        aria-label="AI HTML 生成"
         className="cowart-ai-generation-panel"
         data-status={status}
         onClick={stopEditorOverlayEvent}
@@ -2848,7 +3515,7 @@ function CowartAiDraftGenerationPanel() {
           }}
           onKeyDown={handlePromptKeyDown}
           onPaste={handlePromptPaste}
-          placeholder="描述你想生成的 HTML 草稿"
+          placeholder="描述你想生成的 HTML"
           rows={3}
           value={promptValue}
         />
@@ -3088,6 +3755,14 @@ function CowartAspectLockIcon({ locked }) {
 
 function CowartSelectionToolbar() {
   const editor = useEditor()
+  const slidesShapeId = useValue(
+    'cowart selected ai slides toolbar shape id',
+    () => {
+      const shape = editor.getOnlySelectedShape()
+      return isAiSlidesShape(shape) ? shape.id : null
+    },
+    [editor]
+  )
   const htmlDraftShapeId = useValue(
     'cowart selected html draft toolbar shape id',
     () => {
@@ -3097,11 +3772,59 @@ function CowartSelectionToolbar() {
     [editor]
   )
 
+  if (slidesShapeId) {
+    return <CowartSlidesToolbar slidesShapeId={slidesShapeId} />
+  }
+
   if (htmlDraftShapeId) {
     return <CowartHtmlDraftToolbar draftShapeId={htmlDraftShapeId} />
   }
 
   return <CowartImageToolbar />
+}
+
+function CowartSlidesToolbar({ slidesShapeId }) {
+  const editor = useEditor()
+  const showToolbar = useValue(
+    'cowart show ai slides toolbar',
+    () => editor.isInAny('select.idle', 'select.pointing_shape'),
+    [editor]
+  )
+  const getSelectionBounds = useCallback(() => {
+    const fullBounds = editor.getSelectionScreenBounds()
+    if (!fullBounds) return undefined
+    return new Box(fullBounds.x, fullBounds.y, fullBounds.width, 0)
+  }, [editor])
+
+  if (!showToolbar) return null
+
+  function openSlidesViewer() {
+    editor.getContainerDocument().dispatchEvent(
+      new CustomEvent(COWART_OPEN_SLIDES_EVENT, {
+        detail: { slidesShapeId }
+      })
+    )
+  }
+
+  return (
+    <TldrawUiContextualToolbar
+      className="tlui-media__toolbar cowart-slides-toolbar"
+      getSelectionBounds={getSelectionBounds}
+      label="AI Slides 工具栏"
+    >
+      <TldrawUiToolbarButton
+        aria-label={AI_SLIDES_PRESENT_LABEL}
+        className="cowart-slides-present-button"
+        data-testid="tool.cowart-slides-present"
+        onClick={openSlidesViewer}
+        title={AI_SLIDES_PRESENT_LABEL}
+        type="icon"
+      >
+        <Play aria-hidden="true" className="cowart-slides-play-icon" size={15} strokeWidth={2} />
+        <span className="cowart-slides-toolbar-label">{AI_SLIDES_PRESENT_LABEL}</span>
+      </TldrawUiToolbarButton>
+    </TldrawUiContextualToolbar>
+  )
 }
 
 function CowartHtmlDraftToolbar({ draftShapeId }) {
@@ -3133,7 +3856,7 @@ function CowartHtmlDraftToolbar({ draftShapeId }) {
     <TldrawUiContextualToolbar
       className="tlui-media__toolbar tlui-image__toolbar cowart-html-draft__toolbar"
       getSelectionBounds={getSelectionBounds}
-      label="AI Html 工具栏"
+      label="AI HTML 工具栏"
     >
       {!isDomEditing && (
         <CowartHtmlDraftToolbarButton
@@ -3604,13 +4327,14 @@ function CowartToolbarDivider() {
 
 function CowartToolbar(props) {
   return (
-    <DefaultToolbar {...props} maxItems={10}>
+    <DefaultToolbar {...props} maxItems={11}>
       <CowartAnnotationToolbarItem />
       <CowartToolbarDivider />
       <SelectToolbarItem />
       <HandToolbarItem />
       <CowartToolbarItem toolId={AI_IMAGE_TOOL_ID} />
       <CowartToolbarItem toolId={AI_DRAFT_TOOL_ID} />
+      <CowartToolbarItem toolId={AI_SLIDES_TOOL_ID} />
       <CowartToolbarDivider />
       <AssetToolbarItem />
       <DrawToolbarItem />
@@ -3657,6 +4381,7 @@ function getCowartSelection(editor) {
       meta: shape?.meta ?? null,
       isAiImageHolder: shape?.meta?.cowartAiImageHolder === true,
       isAiDraftHolder: shape?.meta?.cowartAiDraftHolder === true,
+      isAiSlides: shape?.meta?.cowartAiSlides === true,
       isHtmlDraft: isCowartHtmlDraftEmbedShape(shape),
       props: shape?.props ?? null,
       asset: asset
@@ -3838,10 +4563,52 @@ export default function App() {
     const viewStateTimer = window.setInterval(syncViewState, 500)
     editor.timers.setTimeout(syncViewState, 100)
 
+    let slidesLayoutTimer = null
+    let isLayingOutSlides = false
+    function scheduleSlidesLayout() {
+      if (isLayingOutSlides || editor.inputs.getIsDragging()) return
+      window.clearTimeout(slidesLayoutTimer)
+      slidesLayoutTimer = window.setTimeout(() => {
+        if (isLayingOutSlides || editor.inputs.getIsDragging()) return
+        isLayingOutSlides = true
+        try {
+          editor.run(
+            () => {
+              normalizeAiDraftHolderLabels(editor)
+              layoutAllAiSlides(editor)
+            },
+            { history: 'ignore' }
+          )
+        } finally {
+          isLayingOutSlides = false
+        }
+      }, 0)
+    }
+    function handleSlidesPointerUp(event) {
+      if (event.name === 'pointer_up') scheduleSlidesLayout()
+    }
+    editor.on('event', handleSlidesPointerUp)
+    const disposeSlidesBeforeCreateHandler = editor.sideEffects.registerBeforeCreateHandler(
+      'shape',
+      (shape, source) => preparePastedItemForAiSlides(editor, shape, source)
+    )
+    const disposeSlidesOperationHandler = editor.sideEffects.registerOperationCompleteHandler(() => {
+      if (movePastedItemsIntoAiSlides(editor)) return
+      scheduleSlidesLayout()
+    })
+    editor.timers.setTimeout(scheduleSlidesLayout, 100)
+
+    const containerDocument = editor.getContainerDocument()
+    function handleCowartCopy(event) {
+      copySelectedCowartContent(editor, event)
+    }
+    containerDocument.addEventListener('copy', handleCowartCopy, { capture: true })
+
     let saveTimer = null
     let isSaving = false
     let hasPendingSave = false
     let hasUnsavedChanges = false
+    let documentChangeVersion = 0
     let isSyncingAnnotationShape = false
     let remoteLoadController = null
     const acknowledgedImageShapeDeletes = new Set()
@@ -3855,6 +4622,8 @@ export default function App() {
       }
 
       isSaving = true
+      const savingVersion = documentChangeVersion
+      const acknowledgedDeletesInSave = new Set(acknowledgedImageShapeDeletes)
       try {
         const saveResult = await saveCowartCanvasSnapshot(editor.store.getStoreSnapshot(), {
           protectImageRecords: true,
@@ -3863,13 +4632,15 @@ export default function App() {
         if (saveResult?.ok === false) {
           throw new Error(saveResult.message || 'Cowart refused to save the canvas snapshot.')
         }
-        acknowledgedImageShapeDeletes.clear()
-        hasUnsavedChanges = false
+        for (const imageShapeId of acknowledgedDeletesInSave) {
+          acknowledgedImageShapeDeletes.delete(imageShapeId)
+        }
+        hasUnsavedChanges = documentChangeVersion !== savingVersion
       } catch (error) {
         console.error(error)
       } finally {
         isSaving = false
-        if (hasPendingSave) {
+        if (hasPendingSave || hasUnsavedChanges) {
           hasPendingSave = false
           scheduleSave()
         }
@@ -3877,8 +4648,11 @@ export default function App() {
     }
 
     function scheduleSave() {
+      documentChangeVersion += 1
       hasUnsavedChanges = true
       window.clearTimeout(saveTimer)
+      window.clearTimeout(slidesLayoutTimer)
+      if (isSaving) hasPendingSave = true
       saveTimer = window.setTimeout(saveCanvas, 500)
     }
 
@@ -4026,6 +4800,10 @@ export default function App() {
       unsubscribe()
       unsubscribeAnnotationEditingToolLock()
       unsubscribeAnnotationShapeSync()
+      editor.off('event', handleSlidesPointerUp)
+      containerDocument.removeEventListener('copy', handleCowartCopy, { capture: true })
+      disposeSlidesBeforeCreateHandler()
+      disposeSlidesOperationHandler()
       syncViewState()
       saveCanvas()
     }
@@ -4056,6 +4834,7 @@ export default function App() {
         assets={cowartTldrawAssetStore}
         inferDarkMode
         onMount={handleMount}
+        options={cowartTldrawOptions}
         overrides={cowartUiOverrides}
         components={cowartComponents}
         shapeUtils={cowartShapeUtils}
